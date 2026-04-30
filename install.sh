@@ -122,13 +122,30 @@ $sudo_cmd install -m 0755 "$tmp/$BIN" "$target" || err "install to $target faile
 
 ok "Installed $BIN $version → $target"
 
-# Install the Claude Code skill automatically. Most operators run this
-# from a Claude Code terminal, and asking them to follow up with another
-# command is friction we can avoid. If they don't use Claude, the file
-# sits unused at ~/.claude/skills/suppyhq/SKILL.md — harmless. Quiet on
-# failure so a missing $HOME doesn't kill the install.
-if "$target" install-skill >/dev/null 2>&1; then
-  ok "Installed Claude Code skill → ~/.claude/skills/suppyhq/SKILL.md"
+# Auto-install the Agent Skill for every AI agent we can detect on the
+# system. Cursor is intentionally skipped — it's project-scoped, not
+# user-scoped, so installing it from $HOME would put a stray file in
+# wherever the operator happened to run the curl from. They can install
+# it from their project root with `suppyhq install-skill --target=cursor`.
+detected_any=0
+detect_and_install() {
+  local agent_dir="$1" target_name="$2" label="$3"
+  if [ -d "$HOME/$agent_dir" ]; then
+    if "$target" install-skill --target="$target_name" >/dev/null 2>&1; then
+      ok "Installed $label skill"
+      detected_any=1
+    fi
+  fi
+}
+detect_and_install ".claude"          "claude"   "Claude Code"
+detect_and_install ".codex"           "codex"    "Codex CLI"
+detect_and_install ".config/opencode" "opencode" "OpenCode"
+
+# No agent detected → fall back to Claude as the default; the file's
+# tiny and harmless if they end up not using one.
+if [ "$detected_any" = "0" ]; then
+  "$target" install-skill >/dev/null 2>&1 \
+    && ok "Installed Claude Code skill (default)"
 fi
 
 # If credentials were passed, write the config now so the operator can
