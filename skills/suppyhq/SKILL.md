@@ -125,12 +125,14 @@ Env vars take precedence over the config file.
 
 ## Scopes
 
-Each agent is granted one or both of these scopes when it's created at `https://app.suppyhq.com/agents`:
+An agent has one of exactly **two** permission shapes. There is no "reply-only" agent — replying needs context, so `reply` is always paired with `read`.
 
-- **`read`** — *Read conversations + customer profiles.* List open conversations, read messages, look up customer profiles and purchase history. Required for `inbox`, `thread`, and `customers`.
-- **`reply`** — *Reply on your behalf.* Save a draft, or send a reply that queues for 30 seconds (cancellable in the operator UI). Required for `reply` (with or without `--draft`). Sent emails carry an attribution footer naming the agent.
+| Permission | Scope tokens | What you can do |
+|---|---|---|
+| **Read only** | `read` | `inbox`, `thread`, `customers` — list and inspect, no writes. Good for triage / audit / digest agents. |
+| **Read + reply** | `read reply` | All of the above, plus `reply` (with or without `--draft`). Sent emails carry an attribution footer naming the agent. The default for most agents. |
 
-Most agents have both. A read-only audit / triage agent might have only `read`.
+Check the operator's intent before assuming. If they say "draft me a reply" and `reply` isn't in your scopes, tell them — don't try to fake it by, say, copying the body into a `notes` call.
 
 ## Rate limits
 
