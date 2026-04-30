@@ -141,9 +141,12 @@ If a command exits non-zero with `HTTP 429` in the error message, the API is rat
 1. Wait **1 second**, retry once.
 2. Still 429? Wait **2 seconds**, retry once.
 3. Still 429? Wait **4 seconds**, retry once.
-4. Still 429 after the third retry (~7s of backoff total)? **Stop.** Tell the operator the API is rate-limiting and they should try again in a minute.
+4. Still 429 after the third retry (~7s of backoff total)? **The server is under load — hold for 60 seconds**, then make one final attempt.
+5. Still 429 after the hold? Stop. Tell the operator the server is busy and ask them to try again in a few minutes.
 
-Three retries, exponential, then surface the failure. Don't loop forever. Don't retry on any other status — `4xx` is permanent (fix the input), `5xx` likely means a real outage (don't pile on).
+Three quick retries, one long hold, then surface. The long hold matters: getting 429 three times in a row means the rate-limiter isn't a per-second cap — the server is genuinely under high load, and hammering it makes things worse. Sit out a minute. Don't loop forever.
+
+Don't retry on any other status — `4xx` is permanent (fix the input), `5xx` likely means a real outage (don't pile on).
 
 ## When something goes wrong
 
