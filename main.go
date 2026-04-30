@@ -21,8 +21,12 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -113,6 +118,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runAuth(rest, stdin, stdout, stderr)
 	case "install-skill":
 		if err := runInstallSkill(rest, stdout); err != nil {
+			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
+			return 1
+		}
+		return 0
+	case "upgrade":
+		if err := runUpgrade(stdout); err != nil {
 			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
 			return 1
 		}
@@ -530,6 +541,242 @@ func printJSON(stdout io.Writer, raw []byte) {
 	fmt.Fprintln(stdout, string(out))
 }
 
+// runUpgrade resolves the latest GitHub release, downloads the matching
+// platform archive, verifies its SHA256 against the published
+// checksums.txt, and replaces the running binary in place. Same shape
+// as install.sh but via Go stdlib so a one-shot `suppyhq upgrade` does
+// not depend on curl/tar/sha256sum being installed.
+func runUpgrade(stdout io.Writer) error {
+	const repo = "karloscodes/suppyhq-cli"
+
+	fmt.Fprintln(stdout, "Checking for updates…")
+
+	tag, err := latestReleaseTag(repo)
+	if err != nil {
+		return fmt.Errorf("could not check latest release: %w", err)
+	}
+
+	if tag == Version || strings.TrimPrefix(tag, "v") == strings.TrimPrefix(Version, "v") {
+		fmt.Fprintf(stdout, "Already on %s.\n", tag)
+		return nil
+	}
+
+	osName := runtime.GOOS
+	arch := runtime.GOARCH
+	if osName != "darwin" && osName != "linux" {
+		return fmt.Errorf("unsupported OS %q (need darwin or linux)", osName)
+	}
+	if arch != "amd64" && arch != "arm64" {
+		return fmt.Errorf("unsupported arch %q (need amd64 or arm64)", arch)
+	}
+
+	versionNoV := strings.TrimPrefix(tag, "v")
+	archive := fmt.Sprintf("suppyhq_%s_%s_%s.tar.gz", versionNoV, osName, arch)
+	archiveURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, archive)
+	checksumsURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/checksums.txt", repo, tag)
+
+	fmt.Fprintf(stdout, "Downloading %s…\n", archive)
+
+	tmpDir, err := os.MkdirTemp("", "suppyhq-upgrade-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, archive)
+	if err := downloadFile(archiveURL, archivePath); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "Verifying checksum…")
+	if err := verifyChecksum(archivePath, checksumsURL, archive); err != nil {
+		return fmt.Errorf("checksum mismatch: %w", err)
+	}
+
+	if err := extractTarGzBinary(archivePath, "suppyhq", filepath.Join(tmpDir, "suppyhq")); err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = resolved
+	}
+
+	if err := replaceBinary(self, filepath.Join(tmpDir, "suppyhq")); err != nil {
+		return fmt.Errorf("replace %s: %w", self, err)
+	}
+
+	fmt.Fprintf(stdout, "Upgraded to %s. Run `suppyhq version` to confirm.\n", tag)
+	return nil
+}
+
+func latestReleaseTag(repo string) (string, error) {
+	resp, err := http.Get("https://api.github.com/repos/" + repo + "/releases/latest")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("github API returned %d: %s", resp.StatusCode, string(body))
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return "", err
+	}
+	if rel.TagName == "" {
+		return "", fmt.Errorf("no tag_name in release response")
+	}
+	return rel.TagName, nil
+}
+
+func downloadFile(url, dest string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func verifyChecksum(archivePath, checksumsURL, expectedName string) error {
+	resp, err := http.Get(checksumsURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, checksumsURL)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// checksums.txt format: "<sha256>  <filename>" per line.
+	var expected string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == expectedName {
+			expected = fields[0]
+			break
+		}
+	}
+	if expected == "" {
+		return fmt.Errorf("no checksum entry for %s", expectedName)
+	}
+
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("expected %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func extractTarGzBinary(archivePath, wantName, destPath string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if filepath.Base(hdr.Name) != wantName || hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, tr); err != nil {
+			out.Close()
+			return err
+		}
+		out.Close()
+		return nil
+	}
+	return fmt.Errorf("%s not found in archive", wantName)
+}
+
+// replaceBinary swaps the running executable with the new one. We copy
+// the new binary into a temp file in the *same directory* as the target
+// so the rename is atomic on the same filesystem; otherwise os.Rename
+// would fall apart across mounts. On Unix, replacing the inode of a
+// running binary is safe — the kernel keeps the old inode alive for the
+// current process, while new invocations pick up the new file.
+func replaceBinary(target, source string) error {
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, ".suppyhq-upgrade-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	src, err := os.Open(source)
+	if err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		src.Close()
+		tmp.Close()
+		return err
+	}
+	src.Close()
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
 func usage(stdout io.Writer) {
 	fmt.Fprintln(stdout, `suppyhq — official CLI for SuppyHQ
 
@@ -541,6 +788,9 @@ Auth:
 Skill:
   install-skill                 Install the Claude Code skill into ~/.claude/skills/suppyhq.
   install-skill --force         Overwrite an existing local copy.
+
+Self:
+  upgrade                       Pull the latest release from GitHub and replace this binary.
 
 Read:
   inbox                         List conversations.

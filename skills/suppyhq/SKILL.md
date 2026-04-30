@@ -51,37 +51,46 @@ suppyhq customers              # list customers
 
 All return JSON. Pipe through `jq` for filtering, or feed straight into an LLM for summarization.
 
-### Reply (two modes)
+### Reply: decide draft or send
 
-**Auto mode** — the reply goes out (default):
+**Default behavior: save as a draft.** Sending should be the exception, not the rule.
 
-```bash
-echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id>
+```dot
+digraph reply_decision {
+    "Did the operator explicitly say 'send', 'handle', 'answer for me'?" [shape=diamond];
+    "suppyhq reply <id> --draft" [shape=box];
+    "suppyhq reply <id>" [shape=box];
+
+    "Did the operator explicitly say 'send', 'handle', 'answer for me'?" -> "suppyhq reply <id>" [label="yes"];
+    "Did the operator explicitly say 'send', 'handle', 'answer for me'?" -> "suppyhq reply <id> --draft" [label="no, or unclear"];
+}
 ```
 
-The message queues for 30 seconds before send, cancellable from the operator UI. Use this when the operator asked you to *handle* the reply, not draft it.
-
-**Draft mode** — saved for the operator to review and send manually:
+**Save as draft (default):**
 
 ```bash
-echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id> --draft
+echo "<p>Your reply text.</p>" | suppyhq reply <conversation_id> --draft
 ```
 
-The draft is written to the operator's composer (one draft per conversation — see below). The operator sees it prefilled when they open the thread, with a banner saying "Drafted by {your agent name} · {time ago}".
+The draft lands in the operator's composer. They review, edit, hit Send. **You're done — don't follow up to send it yourself.** Tell the operator something like *"Drafted in your composer. Open the conversation to review and send."*
 
-**Default to auto when the operator says "send", "handle", "answer", "reply for me".**
-**Default to draft when the operator says "draft", "write", "compose", "show me", "what would you say".**
-**When in doubt, use draft.**
+**Send (only when explicitly asked):**
 
-### How drafts work
+```bash
+echo "<p>Your reply text.</p>" | suppyhq reply <conversation_id>
+```
 
-Each conversation has at most **one draft** — the operator's composer is the draft. The implications:
+Goes out after a 30-second cancel window. Use this *only* when the operator's intent is unambiguous: they said "send", "handle", "answer for me", "ship it", or set up full-auto mode.
 
-- If you call `--draft` and there's already a draft (yours, the operator's, or another agent's), your call **replaces it**. Last writer wins. The operator's typed-but-unsaved words can disappear if you save right after they typed.
-- If the operator typed something and walked away, autosave preserved their text in the draft. Calling `--draft` blindly wipes their words.
-- **Read the conversation first.** `suppyhq thread <id>` shows whether a draft exists in the response. If yes, ask the operator before overwriting: *"There's an existing draft from you/another agent. Replace it?"*
-- When the operator clicks Send in the composer, the draft (your or theirs) is what goes out. Same content, no copy/paste.
-- When the operator clicks Discard, the draft is wiped. The composer empties.
+### Draft rules
+
+These are the rules every agent must follow. They're short. Memorize them.
+
+1. **One draft per conversation.** Calling `--draft` when a draft already exists **overwrites it**. The previous body is gone.
+2. **Check before overwriting.** Run `suppyhq thread <id>` first. If the response shows a draft, ask the operator: *"There's already a draft from you/another agent. Replace it?"* Don't blow away their work.
+3. **Don't send what you drafted.** Drafting and sending are separate operator actions. Save the draft, then stop. The operator presses Send.
+4. **No timing trick will turn a draft into a send.** There's no `suppyhq draft` followed by `suppyhq promote`. Just `--draft` (save) or no flag (send). Pick the right one up front.
+5. **Empty draft = no draft.** Don't autosave on every keystroke; the operator's composer already does that. You save when you have a complete reply.
 
 ## Examples
 

@@ -534,6 +534,67 @@ func TestRun_ReplyDraftSetsParam(t *testing.T) {
 	}
 }
 
+func TestVerifyChecksum_Match(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "suppyhq_0.1.0_darwin_arm64.tar.gz")
+	if err := os.WriteFile(archive, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// sha256 of "hello world"
+	expected := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(expected + "  suppyhq_0.1.0_darwin_arm64.tar.gz\n"))
+	}))
+	defer srv.Close()
+
+	if err := verifyChecksum(archive, srv.URL, "suppyhq_0.1.0_darwin_arm64.tar.gz"); err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+}
+
+func TestVerifyChecksum_Mismatch(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "x.tar.gz")
+	if err := os.WriteFile(archive, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("0000000000000000000000000000000000000000000000000000000000000000  x.tar.gz\n"))
+	}))
+	defer srv.Close()
+
+	if err := verifyChecksum(archive, srv.URL, "x.tar.gz"); err == nil {
+		t.Fatal("want mismatch error")
+	}
+}
+
+func TestVerifyChecksum_FileNotInChecksumsList(t *testing.T) {
+	tmp := t.TempDir()
+	archive := filepath.Join(tmp, "y.tar.gz")
+	if err := os.WriteFile(archive, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("aaaa  other.tar.gz\n"))
+	}))
+	defer srv.Close()
+
+	err := verifyChecksum(archive, srv.URL, "y.tar.gz")
+	if err == nil || !strings.Contains(err.Error(), "no checksum entry") {
+		t.Errorf("want 'no checksum entry', got %v", err)
+	}
+}
+
+func TestLatestReleaseTag(t *testing.T) {
+	// Stub out the github call by spinning a server, but latestReleaseTag
+	// hits the real api host. Skip — covered by the integration smoke test
+	// which actually runs against GitHub. Keep this test as a no-op so the
+	// suite documents the surface.
+	t.Skip("hits live GitHub API; covered by manual smoke test")
+}
+
 func TestRun_ReplyEndToEnd(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
