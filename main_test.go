@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -467,6 +469,105 @@ func TestRun_InboxEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"subject"`) {
 		t.Errorf("missing subject in output: %s", stdout.String())
+	}
+}
+
+func TestGeneratePKCE(t *testing.T) {
+	v1, c1, err := generatePKCE()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1 == "" || c1 == "" {
+		t.Fatal("verifier or challenge empty")
+	}
+	if v1 == c1 {
+		t.Fatal("verifier and challenge must differ")
+	}
+	v2, c2, _ := generatePKCE()
+	if v1 == v2 || c1 == c2 {
+		t.Fatal("subsequent calls must produce different verifier/challenge")
+	}
+	// challenge = base64url(sha256(verifier))
+	sum := sha256.Sum256([]byte(v1))
+	want := base64.RawURLEncoding.EncodeToString(sum[:])
+	if c1 != want {
+		t.Errorf("challenge != base64url(sha256(verifier)); got %q want %q", c1, want)
+	}
+}
+
+func TestBuildCliAuthorizeURL(t *testing.T) {
+	got := buildCliAuthorizeURL("https://example.test", "Claude", "CHAL", "http://127.0.0.1:31337/cb", "STATE")
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "example.test" {
+		t.Errorf("host: %s", u.Host)
+	}
+	if u.Path != "/cli_authorization/new" {
+		t.Errorf("path: %s", u.Path)
+	}
+	q := u.Query()
+	if q.Get("name") != "Claude" {
+		t.Errorf("name: %q", q.Get("name"))
+	}
+	if q.Get("code_challenge") != "CHAL" {
+		t.Errorf("code_challenge: %q", q.Get("code_challenge"))
+	}
+	if q.Get("code_challenge_method") != "S256" {
+		t.Errorf("code_challenge_method: %q", q.Get("code_challenge_method"))
+	}
+	if q.Get("redirect_uri") != "http://127.0.0.1:31337/cb" {
+		t.Errorf("redirect_uri: %q", q.Get("redirect_uri"))
+	}
+	if q.Get("state") != "STATE" {
+		t.Errorf("state: %q", q.Get("state"))
+	}
+	if q.Get("scope") != "read reply" {
+		t.Errorf("scope: %q", q.Get("scope"))
+	}
+}
+
+func TestExchangeCodeForToken_Happy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/token" {
+			t.Errorf("path: %s", r.URL.Path)
+		}
+		r.ParseForm()
+		if r.PostForm.Get("grant_type") != "authorization_code" {
+			t.Errorf("grant_type: %s", r.PostForm.Get("grant_type"))
+		}
+		if r.PostForm.Get("code") != "the_code" {
+			t.Errorf("code: %s", r.PostForm.Get("code"))
+		}
+		if r.PostForm.Get("code_verifier") != "the_verifier" {
+			t.Errorf("verifier: %s", r.PostForm.Get("code_verifier"))
+		}
+		if r.PostForm.Get("client_id") != "client_xyz" {
+			t.Errorf("client_id: %s", r.PostForm.Get("client_id"))
+		}
+		w.Write([]byte(`{"access_token":"tok_long_lived"}`))
+	}))
+	defer srv.Close()
+
+	tok, err := exchangeCodeForToken(srv.URL, "the_code", "the_verifier", "http://127.0.0.1:1234/cb", "client_xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "tok_long_lived" {
+		t.Errorf("got %q", tok)
+	}
+}
+
+func TestFetchToken_UsesAccessTokenWhenSet(t *testing.T) {
+	// If AccessToken is in the config, fetchToken returns it directly
+	// without hitting /oauth/token.
+	tok, err := fetchToken(&config{APIURL: "http://unused", AccessToken: "stored_tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "stored_tok" {
+		t.Errorf("got %q", tok)
 	}
 }
 

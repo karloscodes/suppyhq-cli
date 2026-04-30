@@ -24,18 +24,24 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 //go:embed skills/suppyhq/SKILL.md
@@ -92,8 +98,15 @@ func findSkillTarget(name string) (skillTarget, bool) {
 
 type config struct {
 	APIURL       string `json:"api_url"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	// AccessToken is set by the browser OAuth flow. When present, it's
+	// used directly as the Bearer token, skipping client_credentials
+	// exchange entirely. Empty for --manual / paste-credentials mode,
+	// which keeps the older client_id+secret flow.
+	AccessToken string `json:"access_token,omitempty"`
+	// AgentName is just for display by `auth status`.
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 func main() {
@@ -135,7 +148,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "suppyhq: config: %v\n", err)
 		return 1
 	}
-	if cfg.ClientID == "" || cfg.ClientSecret == "" {
+	// Authenticated by either the browser OAuth flow (AccessToken set)
+	// or the manual client_credentials path (ClientID + ClientSecret).
+	if cfg.AccessToken == "" && (cfg.ClientID == "" || cfg.ClientSecret == "") {
 		fmt.Fprintln(stderr, "suppyhq: not authenticated. Run: suppyhq auth login")
 		return 1
 	}
@@ -238,7 +253,7 @@ func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var err error
 	switch args[0] {
 	case "login":
-		err = runAuthLogin(stdin, stdout)
+		err = runAuthLogin(args[1:], stdin, stdout)
 	case "status":
 		err = runAuthStatus(stdout)
 	case "logout":
@@ -254,12 +269,118 @@ func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runAuthLogin(stdin io.Reader, stdout io.Writer) error {
+// runAuthLogin dispatches between the browser OAuth flow (default) and
+// the paste-credentials fallback (--manual). The browser path is the
+// recommended one — no token transits the operator's clipboard, shell
+// history, or any AI agent's context window.
+func runAuthLogin(args []string, stdin io.Reader, stdout io.Writer) error {
+	manual := false
+	name := ""
+	apiURLFlag := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--manual":
+			manual = true
+		case strings.HasPrefix(a, "--name="):
+			name = strings.TrimPrefix(a, "--name=")
+		case strings.HasPrefix(a, "--api-url="):
+			apiURLFlag = strings.TrimPrefix(a, "--api-url=")
+		}
+	}
+
+	if manual {
+		return runAuthLoginManual(stdin, stdout, apiURLFlag)
+	}
+	return runAuthLoginBrowser(stdin, stdout, name, apiURLFlag)
+}
+
+// runAuthLoginBrowser is the default. PKCE + loopback redirect, modeled
+// on basecamp + gumroad. The token only ever lives between the server
+// and the CLI process; never in the clipboard, shell history, or an
+// AI's context window.
+func runAuthLoginBrowser(stdin io.Reader, stdout io.Writer, name, apiURLFlag string) error {
 	fmt.Fprintln(stdout, "suppyhq auth login")
 	fmt.Fprintln(stdout)
 
 	existing, _ := loadConfig()
-	apiURL := promptDefault(stdin, stdout, "API URL", existing.APIURL, defaultAPIURL)
+	apiURL := apiURLFlag
+	if apiURL == "" {
+		apiURL = promptDefault(stdin, stdout, "API URL", existing.APIURL, defaultAPIURL)
+	}
+	if name == "" {
+		hostname, _ := os.Hostname()
+		fallback := "suppyhq-cli"
+		if hostname != "" {
+			fallback = "suppyhq-cli on " + hostname
+		}
+		name = promptDefault(stdin, stdout, "Agent name", "", fallback)
+	}
+
+	verifier, challenge, err := generatePKCE()
+	if err != nil {
+		return fmt.Errorf("pkce: %w", err)
+	}
+	state, err := randomString(16)
+	if err != nil {
+		return fmt.Errorf("state: %w", err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("loopback listener: %w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/cb", port)
+
+	authURL := buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state)
+
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Opening your browser to approve the CLI…")
+	fmt.Fprintf(stdout, "If it doesn't open, visit:\n  %s\n", authURL)
+	_ = openBrowser(authURL)
+
+	code, returnedClientID, err := waitForCallback(listener, state, 5*time.Minute, stdout)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout)
+	fmt.Fprint(stdout, "Exchanging authorization code… ")
+	token, err := exchangeCodeForToken(apiURL, code, verifier, redirectURI, returnedClientID)
+	if err != nil {
+		fmt.Fprintln(stdout, "failed.")
+		return fmt.Errorf("token exchange: %w", err)
+	}
+	fmt.Fprintln(stdout, "ok.")
+
+	cfg := &config{
+		APIURL:      apiURL,
+		ClientID:    returnedClientID,
+		AccessToken: token,
+		AgentName:   name,
+	}
+	if err := saveConfig(cfg); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "Saved to %s\n", configPath())
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Done. Restart your AI agent so the skill loads, then ask it about your inbox.")
+	return nil
+}
+
+// runAuthLoginManual is the original paste flow, kept as a fallback for
+// CI, ssh-only boxes, and scripted installs. Behind --manual.
+func runAuthLoginManual(stdin io.Reader, stdout io.Writer, apiURLFlag string) error {
+	fmt.Fprintln(stdout, "suppyhq auth login --manual")
+	fmt.Fprintln(stdout)
+
+	existing, _ := loadConfig()
+	apiURL := apiURLFlag
+	if apiURL == "" {
+		apiURL = promptDefault(stdin, stdout, "API URL", existing.APIURL, defaultAPIURL)
+	}
 
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "To get credentials:")
@@ -291,19 +412,164 @@ func runAuthLogin(stdin io.Reader, stdout io.Writer) error {
 	return nil
 }
 
+// generatePKCE returns a verifier + challenge per RFC 7636. Verifier is
+// 32 random bytes base64url-encoded (43 chars after padding strip);
+// challenge is base64url(sha256(verifier)).
+func generatePKCE() (verifier, challenge string, err error) {
+	raw := make([]byte, 32)
+	if _, err = rand.Read(raw); err != nil {
+		return
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(sum[:])
+	return
+}
+
+func randomString(n int) (string, error) {
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state string) string {
+	q := url.Values{
+		"name":                  {name},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {redirectURI},
+		"scope":                 {"read reply"},
+		"state":                 {state},
+	}
+	return strings.TrimRight(apiURL, "/") + "/cli_authorization/new?" + q.Encode()
+}
+
+// waitForCallback runs a one-shot HTTP server that captures the OAuth
+// callback at /cb. Validates `state`, returns the code + client_id sent
+// by the server. Times out so the CLI doesn't hang forever if the
+// operator closes the browser tab.
+func waitForCallback(listener net.Listener, expectedState string, timeout time.Duration, stdout io.Writer) (code, clientID string, err error) {
+	type result struct {
+		code, clientID string
+		err            error
+	}
+	ch := make(chan result, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cb", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if errParam := q.Get("error"); errParam != "" {
+			renderCallbackError(w, "The server rejected the request: "+errParam)
+			ch <- result{err: fmt.Errorf("authorization rejected: %s", errParam)}
+			return
+		}
+		if q.Get("state") != expectedState {
+			renderCallbackError(w, "State mismatch — refusing to continue.")
+			ch <- result{err: fmt.Errorf("state mismatch")}
+			return
+		}
+		c := q.Get("code")
+		cid := q.Get("client_id")
+		if c == "" || cid == "" {
+			renderCallbackError(w, "Missing code or client_id in callback.")
+			ch <- result{err: fmt.Errorf("missing code or client_id in callback")}
+			return
+		}
+		renderCallbackOK(w)
+		ch <- result{code: c, clientID: cid}
+	})
+
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(listener) }()
+	defer srv.Shutdown(context.Background())
+
+	select {
+	case r := <-ch:
+		return r.code, r.clientID, r.err
+	case <-time.After(timeout):
+		return "", "", fmt.Errorf("timed out after %s waiting for browser approval", timeout)
+	}
+}
+
+func renderCallbackOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, `<!doctype html><meta charset=utf-8><title>Authorized</title>
+<style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1917;background:#f5f5f4;margin:0;display:grid;place-items:center;min-height:100vh}div{background:#fff;padding:40px;border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.1);max-width:420px;text-align:center}h1{margin:0 0 8px;font-size:18px}p{margin:0;color:#57534e;font-size:14px}</style>
+<div><h1>Authorized.</h1><p>You can close this tab and return to your terminal.</p></div>`)
+}
+
+func renderCallbackError(w http.ResponseWriter, msg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(400)
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Authorization failed</title>
+<style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1917;background:#f5f5f4;margin:0;display:grid;place-items:center;min-height:100vh}div{background:#fff;padding:40px;border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.1);max-width:420px;text-align:center}h1{margin:0 0 8px;font-size:18px}p{margin:0;color:#dc2626;font-size:14px}</style>
+<div><h1>Authorization failed</h1><p>%s</p></div>`, msg)
+}
+
+func exchangeCodeForToken(apiURL, code, verifier, redirectURI, clientID string) (string, error) {
+	resp, err := http.PostForm(strings.TrimRight(apiURL, "/")+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
+		"code_verifier": {verifier},
+	})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", err
+	}
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("no access_token in response: %s", string(body))
+	}
+	return tokenResp.AccessToken, nil
+}
+
+// openBrowser is a best-effort browser launch. Failure is non-fatal —
+// the auth URL is also printed so the operator can copy it manually.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported OS %q", runtime.GOOS)
+	}
+	return cmd.Start()
+}
+
 func runAuthStatus(stdout io.Writer) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	if cfg.ClientID == "" || cfg.ClientSecret == "" {
+	if cfg.AccessToken == "" && (cfg.ClientID == "" || cfg.ClientSecret == "") {
 		fmt.Fprintln(stdout, "Not authenticated. Run: suppyhq auth login")
 		return nil
 	}
 	if _, err := fetchToken(cfg); err != nil {
 		return fmt.Errorf("authenticated to %s but the token endpoint rejected the credentials: %w", cfg.APIURL, err)
 	}
-	fmt.Fprintf(stdout, "Authenticated to %s as client %s\n", cfg.APIURL, cfg.ClientID)
+	if cfg.AgentName != "" {
+		fmt.Fprintf(stdout, "Authenticated to %s as %q (client %s)\n", cfg.APIURL, cfg.AgentName, cfg.ClientID)
+	} else {
+		fmt.Fprintf(stdout, "Authenticated to %s as client %s\n", cfg.APIURL, cfg.ClientID)
+	}
 	return nil
 }
 
@@ -402,9 +668,14 @@ func printInstallSkillHelp(stdout io.Writer) {
 The skill ships embedded in this binary; no network call is made.`)
 }
 
-// fetchToken exchanges the configured client credentials for a short-lived
-// Bearer access token via OAuth2 client-credentials grant.
+// fetchToken returns the Bearer token for API calls. If the config has
+// an access_token (set by the browser OAuth flow), use it directly —
+// no extra round trip. Otherwise fall back to client_credentials,
+// which is what `auth login --manual` configures.
 func fetchToken(cfg *config) (string, error) {
+	if cfg.AccessToken != "" {
+		return cfg.AccessToken, nil
+	}
 	resp, err := http.PostForm(cfg.APIURL+"/oauth/token", url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {cfg.ClientID},
@@ -781,7 +1052,13 @@ func usage(stdout io.Writer) {
 	fmt.Fprintln(stdout, `suppyhq — official CLI for SuppyHQ
 
 Auth:
-  auth login                    Interactive setup. Run this once.
+  auth login                    Browser-based OAuth flow (default). Opens your
+                                browser, you click Allow, the token lands in
+                                ~/.suppyhq/config.json without ever touching
+                                your clipboard or this AI's context window.
+  auth login --name "Claude"    Name the agent that gets created.
+  auth login --manual           Fallback: paste a Client ID + Secret created
+                                via app.suppyhq.com/agents.
   auth status                   Show who's authenticated.
   auth logout                   Forget credentials.
 
