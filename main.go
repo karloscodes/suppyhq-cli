@@ -494,18 +494,32 @@ func waitForCallback(listener net.Listener, expectedState string, timeout time.D
 }
 
 func renderCallbackOK(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<!doctype html><meta charset=utf-8><title>Authorized</title>
+	body := `<!doctype html><meta charset=utf-8><title>Authorized</title>
 <style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1917;background:#f5f5f4;margin:0;display:grid;place-items:center;min-height:100vh}div{background:#fff;padding:40px;border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.1);max-width:420px;text-align:center}h1{margin:0 0 8px;font-size:18px}p{margin:0;color:#57534e;font-size:14px}</style>
-<div><h1>Authorized.</h1><p>You can close this tab and return to your terminal.</p></div>`)
+<div><h1>Authorized.</h1><p>You can close this tab and return to your terminal.</p></div>`
+	writeHTML(w, 200, body)
 }
 
 func renderCallbackError(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(400)
-	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Authorization failed</title>
+	body := fmt.Sprintf(`<!doctype html><meta charset=utf-8><title>Authorization failed</title>
 <style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1917;background:#f5f5f4;margin:0;display:grid;place-items:center;min-height:100vh}div{background:#fff;padding:40px;border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.1);max-width:420px;text-align:center}h1{margin:0 0 8px;font-size:18px}p{margin:0;color:#dc2626;font-size:14px}</style>
 <div><h1>Authorization failed</h1><p>%s</p></div>`, msg)
+	writeHTML(w, 400, body)
+}
+
+// writeHTML writes the body with explicit Content-Length and a flush so
+// the browser doesn't show a blank page when the server immediately
+// shuts down after handling the callback. Without the flush the response
+// can be cut short before the bytes leave the kernel buffer.
+func writeHTML(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.Header().Set("Connection", "close")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func exchangeCodeForToken(apiURL, code, verifier, redirectURI, clientID string) (string, error) {
