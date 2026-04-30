@@ -461,8 +461,9 @@ func waitForCallback(listener net.Listener, expectedState string, timeout time.D
 	mux.HandleFunc("/cb", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if errParam := q.Get("error"); errParam != "" {
-			renderCallbackError(w, "The server rejected the request: "+errParam)
-			ch <- result{err: fmt.Errorf("authorization rejected: %s", errParam)}
+			browserMsg, cliMsg := authErrorMessages(errParam, q.Get("error_description"))
+			renderCallbackError(w, browserMsg)
+			ch <- result{err: fmt.Errorf("%s", cliMsg)}
 			return
 		}
 		if q.Get("state") != expectedState {
@@ -505,6 +506,22 @@ func renderCallbackError(w http.ResponseWriter, msg string) {
 <style>body{font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1917;background:#f5f5f4;margin:0;display:grid;place-items:center;min-height:100vh}div{background:#fff;padding:40px;border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.1);max-width:420px;text-align:center}h1{margin:0 0 8px;font-size:18px}p{margin:0;color:#dc2626;font-size:14px}</style>
 <div><h1>Authorization failed</h1><p>%s</p></div>`, msg)
 	writeHTML(w, 400, body)
+}
+
+// authErrorMessages turns an OAuth2 error code into (browserMsg, cliMsg).
+// access_denied is the operator clicking Cancel — friendly tone. Everything
+// else is treated as a real failure.
+func authErrorMessages(code, description string) (browserMsg, cliMsg string) {
+	switch code {
+	case "access_denied":
+		return "Authorization cancelled. You can close this tab.", "authorization cancelled"
+	default:
+		msg := description
+		if msg == "" {
+			msg = code
+		}
+		return "Authorization failed: " + msg, "authorization rejected: " + code
+	}
 }
 
 // writeHTML writes the body with explicit Content-Length and a flush so
