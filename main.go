@@ -313,10 +313,14 @@ func runAuthLoginBrowser(stdin io.Reader, stdout io.Writer, name, apiURLFlag str
 	fmt.Fprintln(stdout, "suppyhq auth login")
 	fmt.Fprintln(stdout)
 
-	existing, _ := loadConfig()
+	// Default to production. Dev gets to override with --api-url. We
+	// deliberately do *not* read the previously-saved api_url from
+	// disk — operators ran `suppyhq auth login --api-url=localhost`
+	// during local testing and got stuck with localhost as the prompt
+	// default forever.
 	apiURL := apiURLFlag
 	if apiURL == "" {
-		apiURL = promptDefault(stdin, stdout, "API URL", existing.APIURL, defaultAPIURL)
+		apiURL = defaultAPIURL
 	}
 	if name == "" {
 		hostname, _ := os.Hostname()
@@ -386,10 +390,9 @@ func runAuthLoginManual(stdin io.Reader, stdout io.Writer, apiURLFlag string) er
 	fmt.Fprintln(stdout, "suppyhq auth login --manual")
 	fmt.Fprintln(stdout)
 
-	existing, _ := loadConfig()
 	apiURL := apiURLFlag
 	if apiURL == "" {
-		apiURL = promptDefault(stdin, stdout, "API URL", existing.APIURL, defaultAPIURL)
+		apiURL = defaultAPIURL
 	}
 
 	fmt.Fprintln(stdout)
