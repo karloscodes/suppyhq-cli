@@ -470,6 +470,70 @@ func TestRun_InboxEndToEnd(t *testing.T) {
 	}
 }
 
+func TestSplitDraftFlag(t *testing.T) {
+	cases := []struct {
+		in        []string
+		wantRest  []string
+		wantDraft bool
+	}{
+		{[]string{"42"}, []string{"42"}, false},
+		{[]string{"42", "--draft"}, []string{"42"}, true},
+		{[]string{"--draft", "42"}, []string{"42"}, true},
+		{[]string{"42", "<body>", "-d"}, []string{"42", "<body>"}, true},
+		{[]string{"42", "<body>"}, []string{"42", "<body>"}, false},
+	}
+	for _, c := range cases {
+		got, draft := splitDraftFlag(c.in)
+		if draft != c.wantDraft {
+			t.Errorf("draft for %v: got %v, want %v", c.in, draft, c.wantDraft)
+		}
+		if len(got) != len(c.wantRest) {
+			t.Errorf("rest for %v: got %v, want %v", c.in, got, c.wantRest)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.wantRest[i] {
+				t.Errorf("rest[%d] for %v: got %q, want %q", i, c.in, got[i], c.wantRest[i])
+			}
+		}
+	}
+}
+
+func TestRun_ReplyDraftSetsParam(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			w.Write([]byte(`{"access_token":"tok"}`))
+		case "/api/v1/conversations/42/messages":
+			r.ParseForm()
+			if r.PostForm.Get("draft") != "true" {
+				t.Errorf("draft param: want 'true', got %q", r.PostForm.Get("draft"))
+			}
+			if r.PostForm.Get("body_html") != "<p>draft</p>" {
+				t.Errorf("body_html: %v", r.PostForm)
+			}
+			w.Write([]byte(`{"id":99,"is_draft":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	saveConfig(&config{APIURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"reply", "42", "--draft"}, strings.NewReader("<p>draft</p>"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("got %d (stderr=%s)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"is_draft"`) {
+		t.Errorf("missing is_draft echo: %s", stdout.String())
+	}
+}
+
 func TestRun_ReplyEndToEnd(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

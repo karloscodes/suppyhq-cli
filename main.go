@@ -165,13 +165,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "suppyhq: reply: usage — suppyhq reply <conversation_id> <html_body>  (or pipe body to stdin)")
 			return 1
 		}
-		bodyHTML := readReplyBody(rest, stdin)
+		// Strip --draft from positional args before reading the body.
+		positional, draft := splitDraftFlag(rest)
+		if len(positional) < 1 {
+			fmt.Fprintln(stderr, "suppyhq: reply: missing conversation id")
+			return 1
+		}
+		bodyHTML := readReplyBody(positional, stdin)
 		if bodyHTML == "" {
 			fmt.Fprintln(stderr, "suppyhq: reply: empty body")
 			return 1
 		}
-		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+rest[0]+"/messages",
-			url.Values{"body_html": {bodyHTML}})
+		form := url.Values{"body_html": {bodyHTML}}
+		if draft {
+			form.Set("draft", "true")
+		}
+		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+positional[0]+"/messages", form)
 		if err != nil {
 			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
 			return 1
@@ -182,6 +191,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// splitDraftFlag pulls --draft (or -d) out of the args, returning the rest
+// and a boolean. Keeps the positional ordering of the conversation id and
+// inline body intact so callers don't have to think about flag position.
+func splitDraftFlag(args []string) (rest []string, draft bool) {
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--draft" || a == "-d" {
+			draft = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return rest, draft
 }
 
 // readReplyBody returns the HTML body for `reply` from the second arg if
@@ -526,6 +550,7 @@ Read:
 Write:
   reply <id> <html_body>        Post a reply (queued for delayed send).
   reply <id>                    Same, body read from stdin.
+  reply <id> --draft            Save as a draft for the operator to send manually.
 
 Output: JSON. Pipe to jq, or feed straight to an LLM.
 

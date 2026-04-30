@@ -1,6 +1,6 @@
 ---
 name: suppyhq
-description: Drive a SuppyHQ inbox from the command line. Read conversations and customers, post replies. The CLI talks to the SuppyHQ Agents API using OAuth2 client-credentials. Output is JSON, intended for AI agents and humans alike.
+description: Drive a SuppyHQ inbox from the command line. Read conversations and customers, post replies (or save them as drafts). The CLI talks to the SuppyHQ Agents API using OAuth2 client-credentials. Output is JSON.
 triggers:
   - suppyhq
   - /suppyhq
@@ -15,7 +15,17 @@ argument-hint: "[command] [args...]"
 
 # SuppyHQ
 
-Drive a SuppyHQ inbox from the command line. Triage conversations, look up customers, draft and send replies — all returning JSON for chaining or piping to an LLM.
+Drive a SuppyHQ inbox from the command line. Read conversations, look up customers, write replies (or save as drafts). All commands return JSON.
+
+## Honesty
+
+You are an AI. The customer will know — every reply you send carries an attribution footer the SuppyHQ server appends automatically:
+
+> Replied by **{your agent name}** on behalf of **{operator name}**.
+
+Because of that footer, write naturally without faking the operator's identity. Do not sign the body with the operator's name. Do not write "From: Carlos" or "— Carlos" at the end. Do not say "I'm Carlos's assistant" — say what you'd say. The footer handles attribution; the body answers the question.
+
+Match the operator's tone (formal vs casual, terse vs detailed) by reading their past replies in the same thread. Tone, not identity.
 
 ## Setup (one-time)
 
@@ -23,9 +33,7 @@ Drive a SuppyHQ inbox from the command line. Triage conversations, look up custo
 suppyhq auth login
 ```
 
-Interactive — paste the Client ID and Client Secret from `https://app.suppyhq.com/agents`. Credentials land in `~/.suppyhq/config.json` (mode 0600).
-
-Verify with:
+Paste the Client ID and Client Secret from `https://app.suppyhq.com/agents`. Verify with:
 
 ```bash
 suppyhq auth status
@@ -43,53 +51,56 @@ suppyhq customers              # list customers
 
 All return JSON. Pipe through `jq` for filtering, or feed straight into an LLM for summarization.
 
-### Reply
+### Reply (two modes)
+
+**Send mode** — the reply goes out:
 
 ```bash
-suppyhq reply <conversation_id> "<p>HTML body</p>"
+echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id>
 ```
 
-Or pipe the body via stdin (preferred — no shell escaping):
+The message queues for 30 seconds before send, cancellable from the operator UI. Use this when the operator asked you to handle the reply.
+
+**Draft mode** — saved for the operator to review and send manually:
 
 ```bash
-echo "<p>Sent from the CLI.</p>" | suppyhq reply 42
+echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id> --draft
 ```
 
-Replies go through the **same delayed-send window** as a reply typed in the web UI: 30 seconds of "pending" with a Cancel button visible to the operator. Don't send a reply on behalf of the operator without confirming.
+Use this when the operator asked you to draft, or when you're not confident enough to send. The draft sits in the conversation timeline with Send / Edit / Discard buttons until the operator acts on it.
+
+**Default to send when the operator says "send", "handle", "answer".**
+**Default to draft when the operator says "draft", "write", "compose", "show me".**
+**When in doubt, use draft.**
 
 ## Examples
 
-**Triage what's waiting**
-
 ```bash
+# triage
 suppyhq inbox | jq '.[] | select(.status=="open") | {id, subject, customer: .customer.email}'
-```
 
-**Show the latest message in a thread**
+# read context, then draft
+suppyhq thread 42 | jq '.messages'
+echo "<p>Yes — out by Friday.</p>" | suppyhq reply 42 --draft
 
-```bash
-suppyhq thread 42 | jq '.messages[-1]'
-```
-
-**Draft + confirm + send**
-
-```bash
-DRAFT=$(echo "<p>Hi — yes, that's the next release. Out by Friday.</p>")
-echo "$DRAFT" | suppyhq reply 42
+# operator asked you to handle while they're in meetings
+echo "<p>Refunded.</p>" | suppyhq reply 42
 ```
 
 ## What the agent should do
 
-- **Confirm before replying.** Always show the operator the draft and the conversation id, get a yes, *then* run `suppyhq reply`.
-- **Read first, write second.** When triaging, prefer summarizing what's open over composing replies unsolicited.
-- **Match the operator's voice.** Quote past replies they've sent in this thread (`suppyhq thread <id>`) before drafting a new one.
-- **One thread at a time.** SuppyHQ's whole stance is that operators handle one customer at a time. Don't queue up batched replies.
+- **Read first, write second.** Summarize what's open before composing replies.
+- **Match the operator's tone, not their identity.** Read past replies for cadence; don't sign as them.
+- **Default to draft mode** when the operator hasn't said "send" or "handle".
+- **One thread at a time.** Don't batch replies across multiple threads.
 
 ## What the agent should NOT do
 
-- Don't send replies without explicit operator confirmation.
-- Don't `auth logout` without being asked.
-- Don't loop over `suppyhq inbox` to auto-reply — that's a different product (autoresponder, configured server-side).
+- **Don't sign the body with the operator's name.** No "— Carlos" or "From, Sarah". The footer attributes the reply.
+- **Don't pretend to be the human.** No "I'm Carlos" or "Speaking on Carlos's behalf, …". Just answer.
+- **Don't send without operator intent.** If they said "look at this", that's a read. Wait for "draft" or "reply".
+- **Don't `auth logout` without being asked.**
+- **Don't loop over `suppyhq inbox` to auto-reply** — that's a different product (server-side autoresponder).
 
 ## Configuration
 
