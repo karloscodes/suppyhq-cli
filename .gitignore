@@ -1,0 +1,5 @@
+/dist/
+/suppyhq
+/suppyhq-cli
+*.test
+*.out
