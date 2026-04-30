@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRun_Help(t *testing.T) {
@@ -472,6 +473,117 @@ func TestRun_InboxEndToEnd(t *testing.T) {
 	}
 }
 
+func TestSemverInt_OrdersCorrectly(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool // a > b
+	}{
+		{"v0.2.0", "v0.1.0", true},
+		{"v0.10.0", "v0.2.0", true}, // double-digit minor must beat lexical compare
+		{"v1.0.0", "v0.99.99", true},
+		{"v0.2.0", "v0.2.0", false},
+		{"v0.2.0-rc1", "v0.2.0", false}, // rc strip → equal → not newer
+		{"v0.2.1", "v0.2.0", true},
+	}
+	for _, c := range cases {
+		got := semverInt(c.a) > semverInt(c.b)
+		if got != c.want {
+			t.Errorf("%s > %s: got %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestShouldCheckVersion_SkipsNoiseAndDev(t *testing.T) {
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "")
+	origVersion := Version
+	defer func() { Version = origVersion }()
+
+	Version = "v0.2.0"
+	for _, cmd := range []string{"version", "-v", "--version", "help", "-h", "--help", "upgrade"} {
+		if shouldCheckVersion(cmd) {
+			t.Errorf("expected skip for %q", cmd)
+		}
+	}
+	for _, cmd := range []string{"inbox", "thread", "customers", "reply", "auth", "install-skill"} {
+		if !shouldCheckVersion(cmd) {
+			t.Errorf("expected check for %q", cmd)
+		}
+	}
+
+	Version = "dev"
+	if shouldCheckVersion("inbox") {
+		t.Error("dev builds should never trigger a version check")
+	}
+}
+
+func TestShouldCheckVersion_RespectsEnvOptOut(t *testing.T) {
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "1")
+	origVersion := Version
+	defer func() { Version = origVersion }()
+	Version = "v0.2.0"
+
+	if shouldCheckVersion("inbox") {
+		t.Error("SUPPYHQ_NO_VERSION_CHECK=1 must silence the check")
+	}
+}
+
+func TestVersionCheckRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if got := readVersionCheck(); got != nil {
+		t.Errorf("expected nil for missing file, got %+v", got)
+	}
+
+	writeVersionCheck(&versionCheck{
+		CheckedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		Latest:    "v0.2.1",
+	})
+	got := readVersionCheck()
+	if got == nil {
+		t.Fatal("expected cache, got nil")
+	}
+	if got.Latest != "v0.2.1" {
+		t.Errorf("latest: %q", got.Latest)
+	}
+}
+
+func TestMaybeShowUpgradeNotice_PrintsWhenBehind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "")
+	origVersion := Version
+	defer func() { Version = origVersion }()
+	Version = "v0.2.0"
+
+	writeVersionCheck(&versionCheck{CheckedAt: time.Now(), Latest: "v0.2.1"})
+
+	var stderr bytes.Buffer
+	maybeShowUpgradeNotice(&stderr)
+	if !strings.Contains(stderr.String(), "v0.2.0 → v0.2.1") {
+		t.Errorf("expected upgrade notice, got: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "suppyhq upgrade") {
+		t.Errorf("expected suggested command, got: %q", stderr.String())
+	}
+}
+
+func TestMaybeShowUpgradeNotice_QuietWhenCurrent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	origVersion := Version
+	defer func() { Version = origVersion }()
+	Version = "v0.2.1"
+
+	writeVersionCheck(&versionCheck{CheckedAt: time.Now(), Latest: "v0.2.1"})
+
+	var stderr bytes.Buffer
+	maybeShowUpgradeNotice(&stderr)
+	if stderr.Len() != 0 {
+		t.Errorf("expected silence when current, got: %q", stderr.String())
+	}
+}
+
 func TestGeneratePKCE(t *testing.T) {
 	v1, c1, err := generatePKCE()
 	if err != nil {
@@ -568,6 +680,219 @@ func TestFetchToken_UsesAccessTokenWhenSet(t *testing.T) {
 	}
 	if tok != "stored_tok" {
 		t.Errorf("got %q", tok)
+	}
+}
+
+func TestExchangeCodeForToken_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForToken(srv.URL, "code", "verifier", "http://127.0.0.1:1/cb", "client")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("status code missing: %v", err)
+	}
+}
+
+func TestExchangeCodeForToken_EmptyAccessTokenIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"token_type":"Bearer"}`))
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForToken(srv.URL, "code", "verifier", "http://127.0.0.1:1/cb", "client")
+	if err == nil {
+		t.Fatal("want error for empty access_token")
+	}
+}
+
+func TestAuthErrorMessages(t *testing.T) {
+	cases := []struct {
+		code, desc        string
+		wantBrowserSubstr string
+		wantCLISubstr     string
+	}{
+		{"access_denied", "", "cancelled", "cancelled"},
+		{"server_error", "", "Authorization failed", "rejected: server_error"},
+		{"server_error", "Database is on fire", "Database is on fire", "rejected: server_error"},
+	}
+	for _, c := range cases {
+		browser, cli := authErrorMessages(c.code, c.desc)
+		if !strings.Contains(browser, c.wantBrowserSubstr) {
+			t.Errorf("browser msg for code=%q desc=%q: %q lacks %q", c.code, c.desc, browser, c.wantBrowserSubstr)
+		}
+		if !strings.Contains(cli, c.wantCLISubstr) {
+			t.Errorf("cli msg for code=%q desc=%q: %q lacks %q", c.code, c.desc, cli, c.wantCLISubstr)
+		}
+	}
+}
+
+func TestPrintJSON_PrettyPrintsValidJSON(t *testing.T) {
+	var out bytes.Buffer
+	printJSON(&out, []byte(`{"id":1,"name":"x"}`))
+	got := out.String()
+	if !strings.Contains(got, "\"id\": 1") {
+		t.Errorf("expected indented JSON, got %q", got)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Errorf("expected newlines from indent, got %q", got)
+	}
+}
+
+func TestPrintJSON_FallsBackOnInvalidJSON(t *testing.T) {
+	var out bytes.Buffer
+	printJSON(&out, []byte("not json at all"))
+	if !strings.Contains(out.String(), "not json at all") {
+		t.Errorf("expected raw passthrough, got %q", out.String())
+	}
+}
+
+func TestRun_AuthStatus_NotAuthenticated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "1")
+
+	var stdout bytes.Buffer
+	code := run([]string{"auth", "status"}, nil, &stdout, io.Discard)
+	if code != 0 {
+		t.Errorf("got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Not authenticated") {
+		t.Errorf("expected 'Not authenticated', got %q", stdout.String())
+	}
+}
+
+func TestRun_AuthStatus_WithAccessToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// We never call the OAuth token endpoint when AccessToken is set.
+		t.Errorf("token endpoint should not be hit when AccessToken is in config (%s)", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "1")
+
+	saveConfig(&config{
+		APIURL:      srv.URL,
+		ClientID:    "agent_uid",
+		AccessToken: "the_token",
+		AgentName:   "Claude on my MacBook",
+	})
+
+	var stdout bytes.Buffer
+	code := run([]string{"auth", "status"}, nil, &stdout, io.Discard)
+	if code != 0 {
+		t.Fatalf("got %d", code)
+	}
+	if !strings.Contains(stdout.String(), `"Claude on my MacBook"`) {
+		t.Errorf("expected agent name in status, got %q", stdout.String())
+	}
+}
+
+func TestRun_AuthLogout_RemovesConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "1")
+	saveConfig(&config{APIURL: "http://x", ClientID: "id", ClientSecret: "secret"})
+
+	cfgPath := filepath.Join(home, configRel)
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("setup: config not written: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	code := run([]string{"auth", "logout"}, nil, &stdout, io.Discard)
+	if code != 0 {
+		t.Fatalf("got %d", code)
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Errorf("config still on disk after logout: err=%v", err)
+	}
+	if !strings.Contains(stdout.String(), "Logged out") {
+		t.Errorf("expected 'Logged out', got %q", stdout.String())
+	}
+}
+
+func TestRun_AuthLogout_NoOpWhenNotAuthenticated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_NO_VERSION_CHECK", "1")
+
+	var stdout bytes.Buffer
+	code := run([]string{"auth", "logout"}, nil, &stdout, io.Discard)
+	if code != 0 {
+		t.Fatalf("got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Already logged out") {
+		t.Errorf("expected 'Already logged out', got %q", stdout.String())
+	}
+}
+
+func TestApiGET_Forbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"insufficient_scope"}`))
+	}))
+	defer srv.Close()
+
+	_, err := apiGET(&config{APIURL: srv.URL}, "tok", "/api/v1/x")
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("expected 403 in error, got %v", err)
+	}
+}
+
+func TestApiPOST_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("boom"))
+	}))
+	defer srv.Close()
+
+	_, err := apiPOST(&config{APIURL: srv.URL}, "tok", "/x", url.Values{"k": {"v"}})
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected 500 in error, got %v", err)
+	}
+}
+
+func TestSaveConfig_HasOmittedFieldsInJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+
+	// Browser flow: only api_url, client_id, access_token, agent_name set.
+	if err := saveConfig(&config{
+		APIURL:      "https://example.test",
+		ClientID:    "id_uid",
+		AccessToken: "t_long",
+		AgentName:   "Claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, configRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	// client_secret was empty + omitempty → must not appear.
+	if strings.Contains(body, "client_secret") {
+		t.Errorf("client_secret should be omitted when empty: %s", body)
+	}
+	// access_token must be present.
+	if !strings.Contains(body, "access_token") {
+		t.Errorf("access_token must persist: %s", body)
 	}
 }
 

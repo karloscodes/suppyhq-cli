@@ -40,6 +40,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -119,6 +120,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	cmd, rest := args[0], args[1:]
+
+	// Hint about a newer release if one exists. Cached for 24h so we
+	// don't hit GitHub on every invocation; skipped for the meta
+	// commands (version, help, upgrade) and for `dev` builds. Set
+	// SUPPYHQ_NO_VERSION_CHECK=1 to silence entirely.
+	if shouldCheckVersion(cmd) {
+		refreshLatestVersion()
+		defer maybeShowUpgradeNotice(stderr)
+	}
 
 	switch cmd {
 	case "help", "-h", "--help":
@@ -847,6 +857,137 @@ func printJSON(stdout io.Writer, raw []byte) {
 	}
 	out, _ := json.MarshalIndent(pretty, "", "  ")
 	fmt.Fprintln(stdout, string(out))
+}
+
+// versionCheckTTL bounds how often we hit the GitHub API. A day is
+// enough — releases happen on the order of weeks, the hint is
+// best-effort, and there's an explicit `suppyhq upgrade` for anyone in
+// a hurry.
+const versionCheckTTL = 24 * time.Hour
+
+type versionCheck struct {
+	CheckedAt time.Time `json:"checked_at"`
+	Latest    string    `json:"latest"`
+}
+
+func versionCheckPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".suppyhq", "version_check.json")
+}
+
+func readVersionCheck() *versionCheck {
+	data, err := os.ReadFile(versionCheckPath())
+	if err != nil {
+		return nil
+	}
+	var vc versionCheck
+	if json.Unmarshal(data, &vc) != nil {
+		return nil
+	}
+	return &vc
+}
+
+func writeVersionCheck(vc *versionCheck) {
+	if err := os.MkdirAll(filepath.Dir(versionCheckPath()), 0o700); err != nil {
+		return
+	}
+	data, err := json.Marshal(vc)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(versionCheckPath(), data, 0o600)
+}
+
+func shouldCheckVersion(cmd string) bool {
+	if os.Getenv("SUPPYHQ_NO_VERSION_CHECK") != "" {
+		return false
+	}
+	if Version == "dev" {
+		return false
+	}
+	switch cmd {
+	case "version", "-v", "--version",
+		"help", "-h", "--help",
+		"upgrade":
+		return false
+	}
+	return true
+}
+
+// refreshLatestVersion bumps the cache if it's stale. Bounded by a
+// short timeout so a flaky network can't wedge a fast command.
+// Failures are remembered (we still write CheckedAt) so we don't retry
+// every invocation.
+func refreshLatestVersion() {
+	vc := readVersionCheck()
+	if vc != nil && time.Since(vc.CheckedAt) < versionCheckTTL {
+		return
+	}
+
+	stale := &versionCheck{CheckedAt: time.Now()}
+	if vc != nil {
+		stale.Latest = vc.Latest
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/karloscodes/suppyhq-cli/releases/latest")
+	if err != nil {
+		writeVersionCheck(stale)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		writeVersionCheck(stale)
+		return
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil || rel.TagName == "" {
+		writeVersionCheck(stale)
+		return
+	}
+	writeVersionCheck(&versionCheck{CheckedAt: time.Now(), Latest: rel.TagName})
+}
+
+// maybeShowUpgradeNotice prints a dim one-liner on stderr when a newer
+// release is cached. Stderr keeps it out of `jq` pipelines and other
+// stdout-consumers.
+func maybeShowUpgradeNotice(stderr io.Writer) {
+	vc := readVersionCheck()
+	if vc == nil || vc.Latest == "" {
+		return
+	}
+	if !isNewerVersion(vc.Latest, Version) {
+		return
+	}
+	fmt.Fprintf(stderr,
+		"\n\033[2mA newer suppyhq is available: %s → %s\nRun `suppyhq upgrade` to update.\033[0m\n",
+		Version, vc.Latest)
+}
+
+// isNewerVersion compares two "vMAJOR.MINOR.PATCH" strings.
+// Pre-release suffixes (-rc1, -beta) are stripped — we don't show
+// notices for those.
+func isNewerVersion(latest, current string) bool {
+	return semverInt(latest) > semverInt(current)
+}
+
+func semverInt(s string) int64 {
+	s = strings.TrimPrefix(s, "v")
+	if i := strings.IndexAny(s, "-+"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(s, ".")
+	var v int64
+	for i := 0; i < 3; i++ {
+		v *= 10000
+		if i < len(parts) {
+			n, _ := strconv.Atoi(parts[i])
+			v += int64(n)
+		}
+	}
+	return v
 }
 
 // runUpgrade resolves the latest GitHub release, downloads the matching
