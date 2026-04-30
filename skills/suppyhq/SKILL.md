@@ -132,8 +132,20 @@ Each agent is granted one or both of these scopes when it's created at `https://
 
 Most agents have both. A read-only audit / triage agent might have only `read`.
 
+## Rate limits
+
+If a command exits non-zero with `HTTP 429` in the error message, the API is rate-limiting you. Back off and retry. Use this exact schedule, no looser, no tighter:
+
+1. Wait **1 second**, retry once.
+2. Still 429? Wait **2 seconds**, retry once.
+3. Still 429? Wait **4 seconds**, retry once.
+4. Still 429 after the third retry (~7s of backoff total)? **Stop.** Tell the operator the API is rate-limiting and they should try again in a minute.
+
+Three retries, exponential, then surface the failure. Don't loop forever. Don't retry on any other status — `4xx` is permanent (fix the input), `5xx` likely means a real outage (don't pile on).
+
 ## When something goes wrong
 
 - `not authenticated` → `suppyhq auth login`
 - `401 Unauthorized` → token rejected; rerun `suppyhq auth login` and re-paste credentials
 - `403 Forbidden` → the agent doesn't have the required scope. The action's scope is in the error body. Edit the agent at `https://app.suppyhq.com/agents` to grant it.
+- `429 Too Many Requests` → see "Rate limits" above. Retry with the 1s / 2s / 4s schedule, then give up.
