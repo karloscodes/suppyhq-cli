@@ -53,13 +53,13 @@ All return JSON. Pipe through `jq` for filtering, or feed straight into an LLM f
 
 ### Reply (two modes)
 
-**Send mode** — the reply goes out:
+**Auto mode** — the reply goes out (default):
 
 ```bash
 echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id>
 ```
 
-The message queues for 30 seconds before send, cancellable from the operator UI. Use this when the operator asked you to handle the reply.
+The message queues for 30 seconds before send, cancellable from the operator UI. Use this when the operator asked you to *handle* the reply, not draft it.
 
 **Draft mode** — saved for the operator to review and send manually:
 
@@ -67,11 +67,21 @@ The message queues for 30 seconds before send, cancellable from the operator UI.
 echo "<p>Refunded — credit lands in 5–10 days.</p>" | suppyhq reply <conversation_id> --draft
 ```
 
-Use this when the operator asked you to draft, or when you're not confident enough to send. The draft sits in the conversation timeline with Send / Edit / Discard buttons until the operator acts on it.
+The draft is written to the operator's composer (one draft per conversation — see below). The operator sees it prefilled when they open the thread, with a banner saying "Drafted by {your agent name} · {time ago}".
 
-**Default to send when the operator says "send", "handle", "answer".**
-**Default to draft when the operator says "draft", "write", "compose", "show me".**
+**Default to auto when the operator says "send", "handle", "answer", "reply for me".**
+**Default to draft when the operator says "draft", "write", "compose", "show me", "what would you say".**
 **When in doubt, use draft.**
+
+### How drafts work
+
+Each conversation has at most **one draft** — the operator's composer is the draft. The implications:
+
+- If you call `--draft` and there's already a draft (yours, the operator's, or another agent's), your call **replaces it**. Last writer wins. The operator's typed-but-unsaved words can disappear if you save right after they typed.
+- If the operator typed something and walked away, autosave preserved their text in the draft. Calling `--draft` blindly wipes their words.
+- **Read the conversation first.** `suppyhq thread <id>` shows whether a draft exists in the response. If yes, ask the operator before overwriting: *"There's an existing draft from you/another agent. Replace it?"*
+- When the operator clicks Send in the composer, the draft (your or theirs) is what goes out. Same content, no copy/paste.
+- When the operator clicks Discard, the draft is wiped. The composer empties.
 
 ## Examples
 
