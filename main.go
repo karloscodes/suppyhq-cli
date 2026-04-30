@@ -757,6 +757,12 @@ func loadConfig() (*config, error) {
 		if cfg.ClientSecret == "" {
 			cfg.ClientSecret = disk.ClientSecret
 		}
+		if cfg.AccessToken == "" {
+			cfg.AccessToken = disk.AccessToken
+		}
+		if cfg.AgentName == "" {
+			cfg.AgentName = disk.AgentName
+		}
 		if disk.APIURL != "" && os.Getenv("SUPPYHQ_API_URL") == "" {
 			cfg.APIURL = disk.APIURL
 		}
