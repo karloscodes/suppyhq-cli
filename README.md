@@ -71,6 +71,17 @@ Restart your AI agent session after installing the skill so it picks it up.
 
 OAuth2 client-credentials grant. The CLI exchanges your Client ID + Secret for a short-lived Bearer token on each invocation. No long-lived tokens, no refresh dance.
 
+## Scopes
+
+When you create an agent at `app.suppyhq.com/agents` you grant one or both of these:
+
+| Scope | What it lets the agent do |
+|---|---|
+| `read` | List conversations, read every message in a thread, look up customer profiles and purchase history. Read-only — can't send anything. |
+| `reply` | Save a draft to your composer, or send a reply on your behalf. Sent replies queue for 30 seconds (cancellable from the operator UI). The email carries an attribution footer naming the agent. |
+
+Most agents need both. A triage-only agent can have just `read`.
+
 ## Examples
 
 ```bash

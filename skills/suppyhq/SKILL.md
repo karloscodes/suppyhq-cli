@@ -123,8 +123,17 @@ echo "<p>Refunded.</p>" | suppyhq reply 42
 
 Env vars take precedence over the config file.
 
+## Scopes
+
+Each agent is granted one or both of these scopes when it's created at `https://app.suppyhq.com/agents`:
+
+- **`read`** — *Read conversations + customer profiles.* List open conversations, read messages, look up customer profiles and purchase history. Required for `inbox`, `thread`, and `customers`.
+- **`reply`** — *Reply on your behalf.* Save a draft, or send a reply that queues for 30 seconds (cancellable in the operator UI). Required for `reply` (with or without `--draft`). Sent emails carry an attribution footer naming the agent.
+
+Most agents have both. A read-only audit / triage agent might have only `read`.
+
 ## When something goes wrong
 
 - `not authenticated` → `suppyhq auth login`
 - `401 Unauthorized` → token rejected; rerun `suppyhq auth login` and re-paste credentials
-- `403 Forbidden` → the agent's access list (Read / Reply) doesn't cover this action. Edit the agent at `https://app.suppyhq.com/agents`.
+- `403 Forbidden` → the agent doesn't have the required scope. The action's scope is in the error body. Edit the agent at `https://app.suppyhq.com/agents` to grant it.
