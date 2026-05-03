@@ -121,6 +121,29 @@ echo "<p>Refunded.</p>" | suppyhq reply 42
 - **Don't `auth logout` without being asked.**
 - **Don't loop over `suppyhq inbox` to auto-reply** — that's a different product (server-side autoresponder).
 
+## VIP customers
+
+Each customer in the API has a `vip_at` field. **If it's truthy (a timestamp), the operator has flagged this customer as VIP — they get priority.** If null, it's a regular customer.
+
+VIP is set by the operator (a click on the customer page in the app). Agents do NOT toggle VIP via the CLI — that's a deliberate operator gesture. Treat the field as read-only context.
+
+### Use it for triage
+
+`vip_at` is exposed on every customer in the API, and is also embedded on the inline `customer` of each `inbox` conversation. So you don't need an extra round-trip to learn which threads belong to VIPs.
+
+```bash
+# List VIP threads first in a triage summary
+suppyhq inbox | jq '[.[] | select(.customer.vip_at != null)]'
+```
+
+In a triage summary, call out VIP threads first ("3 VIP threads waiting: …"). In a draft reply, the body itself doesn't change — VIP is about *order of attention*, not different language.
+
+### What VIP doesn't mean
+
+- It's not a tier or paid plan. It's an Apple-Mail-style flag the operator sets on individual customers.
+- It doesn't unlock different actions. A VIP reply still goes through the same draft / send path.
+- It doesn't override scopes. A read-only agent still can't reply, even to a VIP.
+
 ## Configuration
 
 | | |
