@@ -1,0 +1,12 @@
+{
+  "name": "suppyhq",
+  "version": "0.3.0",
+  "description": "SuppyHQ inbox integration for Claude Code — triage conversations, draft replies, MCP tools.",
+  "author": {
+    "name": "SuppyHQ",
+    "email": "hello@suppyhq.com"
+  },
+  "homepage": "https://suppyhq.com/agents",
+  "repository": "https://github.com/karloscodes/suppyhq-cli",
+  "license": "MIT"
+}

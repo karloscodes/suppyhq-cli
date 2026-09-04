@@ -43,13 +43,14 @@ func TestRun_NotAuthenticated(t *testing.T) {
 	t.Setenv("SUPPYHQ_CLIENT_ID", "")
 	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
 
-	var stderr bytes.Buffer
-	code := run([]string{"inbox"}, nil, io.Discard, &stderr)
-	if code != 1 {
-		t.Fatalf("want 1, got %d", code)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"inbox", "--styled"}, nil, &stdout, &stderr)
+	if code != exitAuth {
+		t.Fatalf("want %d, got %d", exitAuth, code)
 	}
-	if !strings.Contains(stderr.String(), "auth login") {
-		t.Errorf("expected 'auth login' hint: %s", stderr.String())
+	combined := stderr.String() + stdout.String()
+	if !strings.Contains(combined, "auth login") {
+		t.Errorf("expected 'auth login' hint: stderr=%s stdout=%s", stderr.String(), stdout.String())
 	}
 }
 
@@ -66,9 +67,9 @@ func TestRun_UnknownCommand(t *testing.T) {
 	t.Setenv("SUPPYHQ_API_URL", srv.URL)
 
 	var stderr bytes.Buffer
-	code := run([]string{"floob"}, nil, io.Discard, &stderr)
-	if code != 1 {
-		t.Fatalf("want 1, got %d", code)
+	code := run([]string{"floob", "--styled"}, nil, io.Discard, &stderr)
+	if code != exitUsage {
+		t.Fatalf("want %d, got %d", exitUsage, code)
 	}
 	if !strings.Contains(stderr.String(), "unknown command") {
 		t.Errorf("expected 'unknown command': %s", stderr.String())
@@ -302,17 +303,17 @@ func TestInstallSkill_NoOverwriteWithoutForce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var out bytes.Buffer
-	if err := runInstallSkill(nil, &out); err != nil {
-		t.Fatal(err)
+	err := runInstallSkill(nil, io.Discard)
+	if err == nil {
+		t.Fatal("want error for unmanaged existing skill")
+	}
+	if !strings.Contains(err.Error(), managedSkillMarker) {
+		t.Errorf("expected managed marker hint: %v", err)
 	}
 
 	data, _ := os.ReadFile(target)
 	if string(data) != "LOCAL EDITS" {
 		t.Errorf("local edits clobbered: %s", data)
-	}
-	if !strings.Contains(out.String(), "--force") {
-		t.Errorf("expected --force hint: %s", out.String())
 	}
 }
 
@@ -504,7 +505,7 @@ func TestShouldCheckVersion_SkipsNoiseAndDev(t *testing.T) {
 			t.Errorf("expected skip for %q", cmd)
 		}
 	}
-	for _, cmd := range []string{"inbox", "thread", "customers", "reply", "auth", "install-skill"} {
+	for _, cmd := range []string{"inbox", "thread", "customers", "reply", "auth", "install-skill", "mcp", "doctor", "setup"} {
 		if !shouldCheckVersion(cmd) {
 			t.Errorf("expected check for %q", cmd)
 		}
@@ -732,9 +733,9 @@ func TestAuthErrorMessages(t *testing.T) {
 	}
 }
 
-func TestPrintJSON_PrettyPrintsValidJSON(t *testing.T) {
+func TestWriteRawJSON_PrettyPrintsValidJSON(t *testing.T) {
 	var out bytes.Buffer
-	printJSON(&out, []byte(`{"id":1,"name":"x"}`))
+	writeRawJSON(&out, []byte(`{"id":1,"name":"x"}`))
 	got := out.String()
 	if !strings.Contains(got, "\"id\": 1") {
 		t.Errorf("expected indented JSON, got %q", got)
@@ -744,9 +745,9 @@ func TestPrintJSON_PrettyPrintsValidJSON(t *testing.T) {
 	}
 }
 
-func TestPrintJSON_FallsBackOnInvalidJSON(t *testing.T) {
+func TestWriteRawJSON_FallsBackOnInvalidJSON(t *testing.T) {
 	var out bytes.Buffer
-	printJSON(&out, []byte("not json at all"))
+	writeRawJSON(&out, []byte("not json at all"))
 	if !strings.Contains(out.String(), "not json at all") {
 		t.Errorf("expected raw passthrough, got %q", out.String())
 	}
@@ -847,8 +848,12 @@ func TestApiGET_Forbidden(t *testing.T) {
 	defer srv.Close()
 
 	_, err := apiGET(&config{APIURL: srv.URL}, "tok", "/api/v1/x")
-	if err == nil || !strings.Contains(err.Error(), "403") {
-		t.Errorf("expected 403 in error, got %v", err)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	ce, ok := err.(*cliError)
+	if !ok || ce.Exit != exitForbidden {
+		t.Errorf("expected forbidden cliError, got %v", err)
 	}
 }
 
@@ -860,8 +865,12 @@ func TestApiPOST_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	_, err := apiPOST(&config{APIURL: srv.URL}, "tok", "/x", url.Values{"k": {"v"}})
-	if err == nil || !strings.Contains(err.Error(), "500") {
-		t.Errorf("expected 500 in error, got %v", err)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	ce, ok := err.(*cliError)
+	if !ok || ce.Exit != exitAPI || !ce.Retryable {
+		t.Errorf("expected retryable api error, got %v", err)
 	}
 }
 
@@ -896,22 +905,27 @@ func TestSaveConfig_HasOmittedFieldsInJSON(t *testing.T) {
 	}
 }
 
-func TestSplitDraftFlag(t *testing.T) {
+func TestSplitReplyFlags(t *testing.T) {
 	cases := []struct {
-		in        []string
-		wantRest  []string
+		in       []string
+		wantRest []string
 		wantDraft bool
+		wantYes  bool
 	}{
-		{[]string{"42"}, []string{"42"}, false},
-		{[]string{"42", "--draft"}, []string{"42"}, true},
-		{[]string{"--draft", "42"}, []string{"42"}, true},
-		{[]string{"42", "<body>", "-d"}, []string{"42", "<body>"}, true},
-		{[]string{"42", "<body>"}, []string{"42", "<body>"}, false},
+		{[]string{"42"}, []string{"42"}, false, false},
+		{[]string{"42", "--draft"}, []string{"42"}, true, false},
+		{[]string{"--draft", "42"}, []string{"42"}, true, false},
+		{[]string{"42", "<body>", "-d"}, []string{"42", "<body>"}, true, false},
+		{[]string{"42", "--yes"}, []string{"42"}, false, true},
+		{[]string{"-y", "42", "<body>"}, []string{"42", "<body>"}, false, true},
 	}
 	for _, c := range cases {
-		got, draft := splitDraftFlag(c.in)
+		got, draft, yes := splitReplyFlags(c.in)
 		if draft != c.wantDraft {
 			t.Errorf("draft for %v: got %v, want %v", c.in, draft, c.wantDraft)
+		}
+		if yes != c.wantYes {
+			t.Errorf("yes for %v: got %v, want %v", c.in, yes, c.wantYes)
 		}
 		if len(got) != len(c.wantRest) {
 			t.Errorf("rest for %v: got %v, want %v", c.in, got, c.wantRest)
@@ -922,6 +936,32 @@ func TestSplitDraftFlag(t *testing.T) {
 				t.Errorf("rest[%d] for %v: got %q, want %q", i, c.in, got[i], c.wantRest[i])
 			}
 		}
+	}
+}
+
+func TestRun_ReplyRequiresYesWhenNonInteractive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			w.Write([]byte(`{"access_token":"tok"}`))
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	saveConfig(&config{APIURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"reply", "42"}, strings.NewReader("<p>hi</p>"), &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("want usage exit, got %d (stdout=%s stderr=%s)", code, stdout.String(), stderr.String())
+	}
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "--yes") {
+		t.Errorf("expected --yes hint: %s", combined)
 	}
 }
 
@@ -1048,7 +1088,7 @@ func TestRun_ReplyEndToEnd(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"reply", "42"}, strings.NewReader("<p>from stdin</p>"), &stdout, &stderr)
+	code := run([]string{"reply", "42", "--yes"}, strings.NewReader("<p>from stdin</p>"), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("want 0, got %d (stderr=%s)", code, stderr.String())
 	}

@@ -5,24 +5,48 @@ Official CLI for [SuppyHQ](https://suppyhq.com). Drive your inbox from the termi
 ```bash
 curl -fsSL https://suppyhq.com/install-cli | bash
 suppyhq auth login
-suppyhq install-skill                # Claude Code
+suppyhq setup claude
 ```
 
 ## What it does
 
 | Command | What it does |
 |---|---|
-| `suppyhq auth login` | Interactive setup. Paste Client ID + Secret from `app.suppyhq.com/agents`. |
+| `suppyhq auth login` | Browser OAuth (default). `--manual` for paste flow. |
 | `suppyhq auth status` | Show who's authenticated. |
-| `suppyhq auth logout` | Forget credentials. |
-| `suppyhq install-skill` | Install the Claude Code skill into `~/.claude/skills/suppyhq/`. |
-| `suppyhq install-skill --target=cursor` | Same, for Cursor / Codex / OpenCode. |
-| `suppyhq inbox` | List conversations (JSON). |
-| `suppyhq thread <id>` | Show one conversation with messages (JSON). |
-| `suppyhq customers` | List customers (JSON). |
-| `suppyhq reply <id> "<html>"` | Post a reply. Body via 2nd arg or stdin. |
+| `suppyhq setup claude` | Claude Code plugin + skill + MCP registration hint. |
+| `suppyhq setup agents` | Skill + every detected coding agent. |
+| `suppyhq doctor` | Check CLI, auth, skill, and plugin health. |
+| `suppyhq mcp` | MCP server on stdin/stdout (domain gateway tools). |
+| `suppyhq inbox` | List conversations. |
+| `suppyhq thread <id>` | Show one conversation with messages. |
+| `suppyhq customers` | List customers. |
+| `suppyhq reply <id>` | Post a reply. Interactive TTY prompts before send; `--yes` skips prompt; `--draft` saves for review. |
 
-All read commands return JSON — pipe to `jq`, feed to an LLM, or just read it.
+## Agent contract
+
+Structured output for humans and machines:
+
+```bash
+suppyhq inbox --json       # {ok, data, summary, breadcrumbs}
+suppyhq inbox --agent      # raw data only (for scripts)
+suppyhq commands --json    # full command catalog
+suppyhq help --agent       # structured help for any command
+```
+
+Errors carry `code`, `retryable`, and `hint` with typed exit codes (auth=3, forbidden=4, rate_limit=5, …). GET requests retry on 429/5xx; **writes never auto-retry**.
+
+## MCP
+
+Register with any MCP client as a stdio server:
+
+```bash
+claude mcp add suppyhq -- suppyhq mcp
+suppyhq mcp --read-only
+suppyhq mcp --domains=conversations,customers
+```
+
+Three domain tools: `suppyhq_conversations`, `suppyhq_customers`, `suppyhq_identity`. Each dispatches `{"action":"...", "params":{...}}`. Use `action: "describe"` for schemas.
 
 ## Install
 
@@ -30,69 +54,40 @@ All read commands return JSON — pipe to `jq`, feed to an LLM, or just read it.
 
 ```bash
 curl -fsSL https://suppyhq.com/install-cli | bash
+# Force a specific agent during install:
+SUPPYHQ_SETUP_AGENT=claude curl -fsSL https://suppyhq.com/install-cli | bash
 ```
 
-Detects OS + arch, downloads the matching binary from GitHub Releases, drops it in `/usr/local/bin/suppyhq` (or `~/.local/bin` if non-root).
+The installer downloads the binary, runs `suppyhq setup agents` (skill + best-effort agent connection), and prints PATH hints. Managed skills (`.managed-by-suppyhq-cli`) refresh automatically on `suppyhq upgrade` and the first run of each new version.
 
 ### Manual
 
-Grab the [latest release](https://github.com/karloscodes/suppyhq-cli/releases/latest), unpack the `tar.gz` for your platform, drop `suppyhq` in your `$PATH`.
+Grab the [latest release](https://github.com/karloscodes/suppyhq-cli/releases/latest).
 
-Supported platforms: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`.
-
-## Skill installation (for AI agents)
-
-Two ways:
+## Skill + plugin
 
 ```bash
-# Built-in (no Node required)
-suppyhq install-skill                          # Claude Code (default)
-suppyhq install-skill --target=cursor          # Cursor
-suppyhq install-skill --target=codex           # Codex CLI
-suppyhq install-skill --target=opencode        # OpenCode
-suppyhq install-skill --target=all             # All of the above
-```
-
-```bash
-# Or via the open Agent Skills standard
+suppyhq setup claude                    # plugin + skill + MCP hint
+suppyhq install-skill --target=cursor   # Cursor (project-scoped)
 npx skills add karloscodes/suppyhq-cli -a claude-code
 ```
 
-Restart your AI agent session after installing the skill so it picks it up.
+Restart your agent session after installing.
 
 ## Configuration
 
 | Source | Use |
 |---|---|
 | `~/.suppyhq/config.json` (0600) | Default. Created by `auth login`. |
-| `SUPPYHQ_API_URL`, `SUPPYHQ_CLIENT_ID`, `SUPPYHQ_CLIENT_SECRET` | Env vars. Override the config file. |
-
-## Authentication
-
-OAuth2 client-credentials grant. The CLI exchanges your Client ID + Secret for a short-lived Bearer token on each invocation. No long-lived tokens, no refresh dance.
-
-## Scopes
-
-When you create an agent at `app.suppyhq.com/agents` you grant one or both of these:
-
-| Scope | What it lets the agent do |
-|---|---|
-| `read` | List conversations, read every message in a thread, look up customer profiles and purchase history. Read-only — can't send anything. |
-| `reply` | Save a draft to your composer, or send a reply on your behalf. Sent replies queue for 30 seconds (cancellable from the operator UI). The email carries an attribution footer naming the agent. |
-
-Most agents need both. A triage-only agent can have just `read`.
+| `SUPPYHQ_API_URL`, `SUPPYHQ_CLIENT_ID`, `SUPPYHQ_CLIENT_SECRET` | Env overrides. |
 
 ## Examples
 
 ```bash
-# What's waiting on me?
-suppyhq inbox | jq '.[] | select(.status=="open") | {id, subject, customer: .customer.email}'
-
-# Latest message in a thread
-suppyhq thread 42 | jq '.messages[-1]'
-
-# Draft + send (with shell escape) or stdin (cleaner)
-echo "<p>Yes — out by Friday.</p>" | suppyhq reply 42
+suppyhq inbox --json | jq '.data[] | select(.status=="open")'
+suppyhq thread 42 --agent | jq '.messages[-1]'
+echo "<p>Yes — out by Friday.</p>" | suppyhq reply 42 --draft
+suppyhq doctor
 ```
 
 ## Development
@@ -100,10 +95,7 @@ echo "<p>Yes — out by Friday.</p>" | suppyhq reply 42
 ```bash
 go test ./...
 go build -o suppyhq .
-./suppyhq help
 ```
-
-Releases are built by [GoReleaser](https://goreleaser.com) on tag push (`v*`). See `.goreleaser.yaml`.
 
 ## License
 

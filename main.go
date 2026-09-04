@@ -115,102 +115,122 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	ff, args := parseFormatFlags(args)
+	outMode := ff.mode()
+
 	if len(args) < 1 {
 		usage(stdout)
-		return 1
+		return exitUsage
 	}
 	cmd, rest := args[0], args[1:]
 
-	// Hint about a newer release if one exists. Cached for 24h so we
-	// don't hit GitHub on every invocation; skipped for the meta
-	// commands (version, help, upgrade) and for `dev` builds. Set
-	// SUPPYHQ_NO_VERSION_CHECK=1 to silence entirely.
 	if shouldCheckVersion(cmd) {
 		refreshLatestVersion()
+		maybeRefreshManagedSkills()
 		defer maybeShowUpgradeNotice(stderr)
 	}
 
 	switch cmd {
 	case "help", "-h", "--help":
-		usage(stdout)
-		return 0
+		return printHelp(stdout, rest)
 	case "version", "-v", "--version":
 		fmt.Fprintln(stdout, Version)
-		return 0
+		return exitOK
 	case "auth":
 		return runAuth(rest, stdin, stdout, stderr)
-	case "install-skill":
+	case "install-skill", "skill":
 		if err := runInstallSkill(rest, stdout); err != nil {
-			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return emitError(stderr, stdout, outMode, err)
 		}
-		return 0
+		return exitOK
 	case "upgrade":
 		if err := runUpgrade(stdout); err != nil {
 			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return exitAPI
 		}
-		return 0
+		return exitOK
+	case "setup":
+		return runSetup(rest, stdout, stderr)
+	case "doctor":
+		return runDoctor(rest, stdout, stderr)
+	case "commands":
+		return runCommands(rest, stdout)
+	case "mcp":
+		return runMCP(rest, stderr)
+	case "agent-hook":
+		return runAgentHook(rest, stdout)
 	}
 
 	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(stderr, "suppyhq: config: %v\n", err)
-		return 1
+		return emitError(stderr, stdout, outMode, errUsage("config: "+err.Error()))
 	}
-	// Authenticated by either the browser OAuth flow (AccessToken set)
-	// or the manual client_credentials path (ClientID + ClientSecret).
 	if cfg.AccessToken == "" && (cfg.ClientID == "" || cfg.ClientSecret == "") {
-		fmt.Fprintln(stderr, "suppyhq: not authenticated. Run: suppyhq auth login")
-		return 1
+		return emitError(stderr, stdout, outMode, errAuth("not authenticated", "Run: suppyhq auth login"))
 	}
 	token, err := fetchToken(cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "suppyhq: token: %v\n", err)
-		return 1
+		return emitError(stderr, stdout, outMode, errAuth("token: "+err.Error(), "Run: suppyhq auth login"))
 	}
 
 	switch cmd {
 	case "inbox":
 		body, err := apiGET(cfg, token, "/api/v1/conversations")
 		if err != nil {
-			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return emitError(stderr, stdout, outMode, err)
 		}
-		printJSON(stdout, body)
+		data, err := decodeJSONData(body)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		return emitSuccess(stdout, outMode, data, summarizeInbox(data), inboxBreadcrumbs(data))
 	case "thread":
 		if len(rest) < 1 {
-			fmt.Fprintln(stderr, "suppyhq: thread: missing conversation id")
-			return 1
+			return emitError(stderr, stdout, outMode, errUsage("thread: missing conversation id"))
 		}
 		body, err := apiGET(cfg, token, "/api/v1/conversations/"+rest[0])
 		if err != nil {
-			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return emitError(stderr, stdout, outMode, err)
 		}
-		printJSON(stdout, body)
+		data, err := decodeJSONData(body)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		return emitSuccess(stdout, outMode, data, summarizeThread(data), threadBreadcrumbs(rest[0], true))
 	case "customers":
 		body, err := apiGET(cfg, token, "/api/v1/customers")
 		if err != nil {
-			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return emitError(stderr, stdout, outMode, err)
 		}
-		printJSON(stdout, body)
+		data, err := decodeJSONData(body)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		summary := "customers"
+		if arr, ok := data.([]any); ok {
+			summary = fmt.Sprintf("%d customers", len(arr))
+		}
+		return emitSuccess(stdout, outMode, data, summary, []breadcrumb{{Action: "inbox", Cmd: "suppyhq inbox"}})
 	case "reply":
 		if len(rest) < 1 {
-			fmt.Fprintln(stderr, "suppyhq: reply: usage — suppyhq reply <conversation_id> <html_body>  (or pipe body to stdin)")
-			return 1
+			return emitError(stderr, stdout, outMode, errUsage("reply: usage — suppyhq reply <conversation_id> <html_body>  (or pipe body to stdin)"))
 		}
-		// Strip --draft from positional args before reading the body.
-		positional, draft := splitDraftFlag(rest)
+		positional, draft, yes := splitReplyFlags(rest)
 		if len(positional) < 1 {
-			fmt.Fprintln(stderr, "suppyhq: reply: missing conversation id")
-			return 1
+			return emitError(stderr, stdout, outMode, errUsage("reply: missing conversation id"))
 		}
 		bodyHTML := readReplyBody(positional, stdin)
 		if bodyHTML == "" {
-			fmt.Fprintln(stderr, "suppyhq: reply: empty body")
-			return 1
+			return emitError(stderr, stdout, outMode, errUsage("reply: empty body"))
+		}
+		if !draft {
+			if err := requireReplySendConfirmation(stdin, stderr, outMode, yes, bodyHTML); err != nil {
+				if err == errReplyCancelled {
+					fmt.Fprintln(stderr, "Send cancelled.")
+					return exitOK
+				}
+				return emitError(stderr, stdout, outMode, err)
+			}
 		}
 		form := url.Values{"body_html": {bodyHTML}}
 		if draft {
@@ -218,30 +238,98 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+positional[0]+"/messages", form)
 		if err != nil {
-			fmt.Fprintf(stderr, "suppyhq: %v\n", err)
-			return 1
+			return emitError(stderr, stdout, outMode, err)
 		}
-		printJSON(stdout, body)
+		data, err := decodeJSONData(body)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		summary := "reply queued"
+		if draft {
+			summary = "draft saved"
+		}
+		return emitSuccess(stdout, outMode, data, summary, threadBreadcrumbs(positional[0], !draft))
 	default:
-		fmt.Fprintf(stderr, "suppyhq: unknown command: %s\n", cmd)
-		return 1
+		return emitError(stderr, stdout, outMode, errUsage("unknown command: "+cmd))
 	}
-	return 0
 }
 
-// splitDraftFlag pulls --draft (or -d) out of the args, returning the rest
-// and a boolean. Keeps the positional ordering of the conversation id and
-// inline body intact so callers don't have to think about flag position.
-func splitDraftFlag(args []string) (rest []string, draft bool) {
+var errReplyCancelled = fmt.Errorf("reply cancelled")
+
+// splitReplyFlags pulls reply flags out of args, returning positional args
+// plus draft/yes booleans.
+func splitReplyFlags(args []string) (rest []string, draft, yes bool) {
 	rest = make([]string, 0, len(args))
 	for _, a := range args {
-		if a == "--draft" || a == "-d" {
+		switch a {
+		case "--draft", "-d":
 			draft = true
-			continue
+		case "--yes", "-y":
+			yes = true
+		default:
+			rest = append(rest, a)
 		}
-		rest = append(rest, a)
 	}
-	return rest, draft
+	return rest, draft, yes
+}
+
+func isInteractiveStdin(stdin io.Reader) bool {
+	f, ok := stdin.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func requireReplySendConfirmation(stdin io.Reader, stderr io.Writer, mode outputMode, yes bool, bodyHTML string) error {
+	if yes {
+		return nil
+	}
+	if mode == modeAgent {
+		return errUsage("reply sends email — use --draft to save without sending, or --yes after the operator confirms")
+	}
+	if !isInteractiveStdin(stdin) {
+		return errUsage("non-interactive send requires --yes (operator confirmed) or --draft")
+	}
+	if !confirmSend(stdin, stderr, bodyHTML) {
+		return errReplyCancelled
+	}
+	return nil
+}
+
+func confirmSend(stdin io.Reader, stderr io.Writer, bodyHTML string) bool {
+	preview := strings.TrimSpace(stripHTMLTags(bodyHTML))
+	if len(preview) > 160 {
+		preview = preview[:157] + "..."
+	}
+	fmt.Fprintln(stderr, "This will send an email to the customer.")
+	if preview != "" {
+		fmt.Fprintf(stderr, "Preview: %s\n", preview)
+	}
+	fmt.Fprint(stderr, "Send this reply? [y/N] ")
+	line, _ := bufio.NewReader(stdin).ReadString('\n')
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes"
+}
+
+func stripHTMLTags(s string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // readReplyBody returns the HTML body for `reply` from the second arg if
@@ -681,17 +769,17 @@ func installOneTarget(t skillTarget, force bool, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	skillDir := filepath.Dir(abs)
 	if _, err := os.Stat(abs); err == nil && !force {
-		fmt.Fprintf(stdout, "[%s] already installed at %s — use --force to overwrite\n", t.name, abs)
-		return nil
+		if isManagedSkillDir(skillDir) {
+			fmt.Fprintf(stdout, "[%s] already installed at %s (managed — refreshed on upgrade)\n", t.name, abs)
+			return nil
+		}
+		return fmt.Errorf("skill already exists at %s without %s — use --force to overwrite", abs, managedSkillMarker)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := writeManagedSkill(abs, stdout, t.name, ""); err != nil {
 		return err
 	}
-	if err := os.WriteFile(abs, []byte(skillMarkdown), 0o644); err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "[%s] installed: %s\n", t.name, abs)
 	if t.scope == "project" {
 		fmt.Fprintf(stdout, "[%s] note: Cursor reads skills per-project. Re-run from each project directory you want it in.\n", t.name)
 	}
@@ -744,39 +832,6 @@ func fetchToken(cfg *config) (string, error) {
 		return "", fmt.Errorf("no access_token in response: %s", string(body))
 	}
 	return tokenResp.AccessToken, nil
-}
-
-func apiGET(cfg *config, token, path string) ([]byte, error) {
-	return apiRequest(cfg, token, "GET", path, nil)
-}
-
-func apiPOST(cfg *config, token, path string, form url.Values) ([]byte, error) {
-	return apiRequest(cfg, token, "POST", path, form)
-}
-
-func apiRequest(cfg *config, token, method, path string, form url.Values) ([]byte, error) {
-	var body io.Reader
-	if form != nil {
-		body = strings.NewReader(form.Encode())
-	}
-	req, err := http.NewRequest(method, cfg.APIURL+path, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if form != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
-	return respBody, nil
 }
 
 func loadConfig() (*config, error) {
@@ -850,16 +905,6 @@ func promptDefault(stdin io.Reader, stdout io.Writer, label, current, fallback s
 		return def
 	}
 	return v
-}
-
-func printJSON(stdout io.Writer, raw []byte) {
-	var pretty any
-	if err := json.Unmarshal(raw, &pretty); err != nil {
-		fmt.Fprintln(stdout, string(raw))
-		return
-	}
-	out, _ := json.MarshalIndent(pretty, "", "  ")
-	fmt.Fprintln(stdout, string(out))
 }
 
 // versionCheckTTL bounds how often we hit the GitHub API. A day is
@@ -1061,7 +1106,12 @@ func runUpgrade(stdout io.Writer) error {
 		return fmt.Errorf("replace %s: %w", self, err)
 	}
 
+	refreshed := refreshManagedSkillsAt(tag)
 	fmt.Fprintf(stdout, "Upgraded to %s. Run `suppyhq version` to confirm.\n", tag)
+	if refreshed > 0 {
+		fmt.Fprintf(stdout, "Refreshed %d managed skill(s).\n", refreshed)
+	}
+	writeSkillRefreshState(&skillRefreshState{CLIVersion: tag, RefreshedAt: time.Now()})
 	return nil
 }
 
@@ -1232,36 +1282,46 @@ func replaceBinary(target, source string) error {
 func usage(stdout io.Writer) {
 	fmt.Fprintln(stdout, `suppyhq — official CLI for SuppyHQ
 
+Global flags:
+  --json, -j       JSON envelope {ok, data, summary, breadcrumbs}
+  --quiet, -q      Raw JSON data only
+  --agent          Agent mode: raw data on success, structured errors
+
 Auth:
-  auth login                    Browser-based OAuth flow (default). Opens your
-                                browser, you click Allow, the token lands in
-                                ~/.suppyhq/config.json without ever touching
-                                your clipboard or this AI's context window.
-  auth login --name "Claude"    Name the agent that gets created.
-  auth login --manual           Fallback: paste a Client ID + Secret created
-                                via app.suppyhq.com/agents.
-  auth status                   Show who's authenticated.
-  auth logout                   Forget credentials.
+  auth login                    Browser OAuth (default)
+  auth login --manual           Paste Client ID + Secret
+  auth status                   Show who's authenticated
+  auth logout                   Forget credentials
 
-Skill:
-  install-skill                 Install the Claude Code skill into ~/.claude/skills/suppyhq.
-  install-skill --force         Overwrite an existing local copy.
+Agent setup:
+  setup claude                  Claude Code plugin + skill + MCP hint
+  setup cursor                  Cursor skill (project-scoped)
+  setup agents                  Skill + every detected agent
+  install-skill                 Install embedded SKILL.md
+  doctor                        Check CLI, auth, skill, plugin health
 
-Self:
-  upgrade                       Pull the latest release from GitHub and replace this binary.
+MCP:
+  mcp                           MCP server on stdin/stdout
+  mcp --read-only               Read-only tools only
+  mcp --domains=conversations,customers
 
 Read:
-  inbox                         List conversations.
-  thread <id>                   Show one conversation with messages.
-  customers                     List customers.
+  inbox                         List conversations
+  thread <id>                   Show one conversation with messages
+  customers                     List customers
 
 Write:
-  reply <id> <html_body>        Post a reply (queued for delayed send).
-  reply <id>                    Same, body read from stdin.
-  reply <id> --draft            Save as a draft for the operator to send manually.
+  reply <id> <html_body>        Post a reply (prompts on TTY; 30s cancel window)
+  reply <id> --yes              Send without prompt (operator confirmed)
+  reply <id> --draft            Save draft for operator review
 
-Output: JSON. Pipe to jq, or feed straight to an LLM.
+Discovery:
+  commands --json               Full command catalog
+  help --agent                  Structured help JSON
+
+Self:
+  upgrade                       Pull latest release from GitHub
 
 Configuration:
-  ~/.suppyhq/config.json    or    SUPPYHQ_API_URL / SUPPYHQ_CLIENT_ID / SUPPYHQ_CLIENT_SECRET`)
+  ~/.suppyhq/config.json    or    SUPPYHQ_* env vars`)
 }

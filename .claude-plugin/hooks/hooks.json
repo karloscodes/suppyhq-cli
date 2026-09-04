@@ -1,0 +1,18 @@
+{
+  "description": "SuppyHQ agent hooks: session context on startup.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "suppyhq agent-hook session-start",
+            "timeout": 5,
+            "statusMessage": "Checking SuppyHQ status"
+          }
+        ]
+      }
+    ]
+  }
+}

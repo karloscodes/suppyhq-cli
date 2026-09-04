@@ -6,21 +6,123 @@
 #   curl -fsSL https://suppyhq.com/install-cli | bash -s -- \
 #     --client-id=ID --client-secret=SECRET [--api-url=https://app.suppyhq.com]
 #
-# Detects OS + arch, downloads the matching binary from the latest GitHub
-# release of karloscodes/suppyhq-cli, verifies the SHA256 checksum, and
-# installs into /usr/local/bin (or $HOME/.local/bin if non-root). When
-# --client-id and --client-secret are passed (the post-create one-liner
-# from app.suppyhq.com/agents), writes the config in one shot so the
-# operator skips `suppyhq auth login`.
+# Options (via environment):
+#   SUPPYHQ_BIN_DIR       Where to install the binary (default: ~/bin if on PATH,
+#                         else ~/.local/bin if on PATH, else ~/.local/bin)
+#   SUPPYHQ_VERSION       Specific version to install (default: latest)
+#   INSTALL_VERSION       Alias for SUPPYHQ_VERSION (backward compatible)
+#   SUPPYHQ_SKIP_SETUP    Set to 1 to skip post-install agent setup
+#   SUPPYHQ_SETUP_AGENT   Which agent(s) `setup agents` connects:
+#                         claude | codex | cursor | opencode | all | none
+#                         Unset = auto-detect (connect one agent; if several,
+#                         install the skill only and print per-agent commands).
 #
-# Override the version with INSTALL_VERSION=v0.1.0.
+# Detects OS + arch, downloads from the latest GitHub release, verifies SHA256,
+# installs the binary, runs `suppyhq setup agents`, and optionally writes OAuth
+# credentials when --client-id and --client-secret are passed.
 set -euo pipefail
 
 REPO="karloscodes/suppyhq-cli"
 BIN="suppyhq"
+BIN_DIR="${SUPPYHQ_BIN_DIR:-}"
+VERSION="${SUPPYHQ_VERSION:-${INSTALL_VERSION:-}}"
 
-# Parse flags. Quietly ignore unknown flags rather than aborting — the
-# installer is curl-piped, so a typo from the operator should still install.
+if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then
+  green() { printf '\033[32m%s\033[0m' "$1"; }
+  red()   { printf '\033[31m%s\033[0m' "$1"; }
+  bold()  { printf '\033[1m%s\033[0m' "$1"; }
+  dim()   { printf '\033[2m%s\033[0m' "$1"; }
+else
+  green() { printf '%s' "$1"; }
+  red()   { printf '%s' "$1"; }
+  bold()  { printf '\033[1m%s\033[0m' "$1"; }
+  dim()   { printf '\033[2m%s\033[0m' "$1"; }
+fi
+
+info()  { echo "  $(green "✓") $1"; }
+step()  { echo "  $(bold "→") $1"; }
+error() { echo "  $(red "✗ ERROR:") $1" >&2; exit 1; }
+
+path_contains_dir() {
+  local dir="$1"
+  [[ ":$PATH:" == *":$dir:"* ]]
+}
+
+default_bin_dir() {
+  if path_contains_dir "$HOME/bin"; then
+    echo "$HOME/bin"
+    return 0
+  fi
+  if path_contains_dir "$HOME/.local/bin"; then
+    echo "$HOME/.local/bin"
+    return 0
+  fi
+  echo "$HOME/.local/bin"
+}
+
+find_sha256_cmd() {
+  if command -v sha256sum &>/dev/null; then
+    echo "sha256sum"
+  elif command -v shasum &>/dev/null; then
+    echo "shasum -a 256"
+  else
+    error "No SHA256 tool found (need sha256sum or shasum)"
+  fi
+}
+
+get_latest_version() {
+  local url version api_json
+  if url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest"); then
+    version="${url##*/}"
+    version="${version#v}"
+    if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+      echo "$version"
+      return 0
+    fi
+  fi
+  if api_json=$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: suppyhq-cli-installer' "https://api.github.com/repos/${REPO}/releases/latest"); then
+    if [[ $api_json =~ \"tag_name\"[[:space:]]*:[[:space:]]*\"v?([^\"]+)\" ]]; then
+      version="${BASH_REMATCH[1]}"
+      if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+        echo "$version"
+        return 0
+      fi
+    fi
+  fi
+  error "Could not determine latest version"
+}
+
+setup_path() {
+  if ! path_contains_dir "$BIN_DIR"; then
+    step "Add $(bold "$BIN_DIR") to your PATH:"
+    echo ""
+    case "${SHELL:-}" in
+      */zsh)
+        echo "    echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ~/.zshrc"
+        echo "    source ~/.zshrc"
+        ;;
+      */bash)
+        echo "    echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ~/.bashrc"
+        echo "    source ~/.bashrc"
+        ;;
+      *)
+        echo "    export PATH=\"${BIN_DIR}:\$PATH\""
+        ;;
+    esac
+    echo ""
+  fi
+}
+
+post_install_setup() {
+  local bin="$BIN_DIR/$BIN"
+  if ! "$bin" setup --help 2>/dev/null | grep -qE '^[[:space:]]+agents[[:space:]]'; then
+    "$bin" install-skill >/dev/null 2>&1 || true
+    return 0
+  fi
+  "$bin" setup agents || true
+}
+
+# Parse flags. Quietly ignore unknown flags — the installer is curl-piped.
 client_id=""
 client_secret=""
 api_url=""
@@ -32,172 +134,110 @@ for arg in "$@"; do
   esac
 done
 
-err() { printf "\033[31merror:\033[0m %s\n" "$*" >&2; exit 1; }
-info() { printf "\033[2m→\033[0m %s\n" "$*"; }
-ok()   { printf "\033[32m✓\033[0m %s\n" "$*"; }
+main() {
+  command -v curl >/dev/null 2>&1 || error "curl is required"
+  command -v tar >/dev/null 2>&1 || error "tar is required"
+  command -v uname >/dev/null 2>&1 || error "uname is required"
 
-require() {
-  command -v "$1" >/dev/null 2>&1 || err "'$1' not found. Please install it and retry."
-}
+  local os arch platform
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  case "$os" in
+    darwin) os="darwin" ;;
+    linux)  os="linux" ;;
+    *) error "unsupported OS: $(uname -s). Supported: macOS, Linux." ;;
+  esac
 
-require curl
-require tar
-require uname
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64) arch="amd64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) error "unsupported arch: $(uname -m). Supported: amd64, arm64." ;;
+  esac
+  platform="${os}_${arch}"
 
-# Detect OS / arch.
-os=""
-case "$(uname -s)" in
-  Darwin) os="darwin" ;;
-  Linux)  os="linux" ;;
-  *) err "unsupported OS: $(uname -s). Supported: macOS, Linux." ;;
-esac
-
-arch=""
-case "$(uname -m)" in
-  x86_64|amd64) arch="amd64" ;;
-  arm64|aarch64) arch="arm64" ;;
-  *) err "unsupported arch: $(uname -m). Supported: amd64, arm64." ;;
-esac
-
-# Resolve version.
-version="${INSTALL_VERSION:-latest}"
-if [ "$version" = "latest" ]; then
-  info "Resolving latest release…"
-  version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -o '"tag_name": *"[^"]*"' \
-    | head -1 \
-    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/') \
-    || err "could not resolve latest release"
-  [ -n "$version" ] || err "empty version from GitHub API"
-fi
-version_no_v="${version#v}"
-
-archive="suppyhq_${version_no_v}_${os}_${arch}.tar.gz"
-url="https://github.com/${REPO}/releases/download/${version}/${archive}"
-checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
-
-# Stage in a tempdir.
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-
-info "Downloading ${archive}"
-curl -fsSL "$url" -o "$tmp/$archive" || err "download failed: $url"
-
-info "Verifying checksum"
-curl -fsSL "$checksums_url" -o "$tmp/checksums.txt" || err "checksums download failed"
-expected=$(grep " ${archive}\$" "$tmp/checksums.txt" | awk '{print $1}')
-[ -n "$expected" ] || err "no checksum entry for $archive"
-
-if command -v sha256sum >/dev/null 2>&1; then
-  actual=$(sha256sum "$tmp/$archive" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-  actual=$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')
-else
-  err "neither sha256sum nor shasum available — cannot verify download"
-fi
-[ "$expected" = "$actual" ] || err "checksum mismatch (expected $expected, got $actual)"
-
-# Extract.
-info "Extracting"
-tar -C "$tmp" -xzf "$tmp/$archive" || err "extract failed"
-[ -x "$tmp/$BIN" ] || err "binary missing in archive"
-
-# Pick install dir.
-install_dir="/usr/local/bin"
-sudo_cmd=""
-if [ ! -w "$install_dir" ]; then
-  if [ "$(id -u)" = "0" ]; then
-    :
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo_cmd="sudo"
-  else
-    install_dir="$HOME/.local/bin"
-    mkdir -p "$install_dir"
-    info "Installing to $install_dir (no sudo found; ensure it's on your PATH)"
+  if [[ -z "$BIN_DIR" ]]; then
+    BIN_DIR=$(default_bin_dir)
   fi
-fi
+  mkdir -p "$BIN_DIR"
 
-target="$install_dir/$BIN"
-$sudo_cmd install -m 0755 "$tmp/$BIN" "$target" || err "install to $target failed"
-
-ok "Installed $BIN $version → $target"
-
-# Auto-install the Agent Skill for every AI agent we can detect on the
-# system. Cursor is intentionally skipped — it's project-scoped, not
-# user-scoped, so installing it from $HOME would put a stray file in
-# wherever the operator happened to run the curl from. They can install
-# it from their project root with `suppyhq install-skill --target=cursor`.
-detected_any=0
-detect_and_install() {
-  local agent_dir="$1" target_name="$2" label="$3"
-  if [ -d "$HOME/$agent_dir" ]; then
-    if "$target" install-skill --target="$target_name" >/dev/null 2>&1; then
-      ok "Installed $label skill"
-      detected_any=1
+  if [[ -n "$VERSION" ]]; then
+    local version="$VERSION"
+    version="${version#v}"
+    if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+      error "Invalid version '${VERSION}'. Expected semver (e.g. 0.2.3)."
     fi
+  else
+    step "Resolving latest release…"
+    version=$(get_latest_version)
   fi
-}
-detect_and_install ".claude"          "claude"   "Claude Code"
-detect_and_install ".codex"           "codex"    "Codex CLI"
-detect_and_install ".config/opencode" "opencode" "OpenCode"
 
-# No agent detected → fall back to Claude as the default; the file's
-# tiny and harmless if they end up not using one.
-if [ "$detected_any" = "0" ]; then
-  "$target" install-skill >/dev/null 2>&1 \
-    && ok "Installed Claude Code skill (default)"
-fi
+  local archive="suppyhq_${version}_${os}_${arch}.tar.gz"
+  local url="https://github.com/${REPO}/releases/download/v${version}/${archive}"
+  local checksums_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
 
-# If credentials were passed, write the config now so the operator can
-# skip `suppyhq auth login`. Mode 0600 mirrors what the CLI writes itself.
-if [ -n "$client_id" ] && [ -n "$client_secret" ]; then
-  config_dir="${HOME}/.suppyhq"
-  config_file="${config_dir}/config.json"
-  mkdir -p "$config_dir"
-  chmod 700 "$config_dir"
-  resolved_api_url="${api_url:-https://app.suppyhq.com}"
-  cat > "$config_file" <<JSON
+  local tmp
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  step "Downloading ${archive}"
+  curl -fsSL "$url" -o "$tmp/$archive" || error "download failed: $url"
+
+  step "Verifying checksum"
+  curl -fsSL "$checksums_url" -o "$tmp/checksums.txt" || error "checksums download failed"
+  local expected actual
+  expected=$(awk -v f="$archive" '$2 == f || $2 == ("*" f) {print $1; exit}' "$tmp/checksums.txt")
+  actual=$(cd "$tmp" && $(find_sha256_cmd) "$archive" | awk '{print $1}')
+  [[ -n "$expected" && "$expected" == "$actual" ]] || error "checksum mismatch for $archive"
+
+  step "Extracting"
+  tar -C "$tmp" -xzf "$tmp/$archive" || error "extract failed"
+  [[ -x "$tmp/$BIN" ]] || error "binary missing in archive"
+
+  install -m 0755 "$tmp/$BIN" "$BIN_DIR/$BIN" || error "install to $BIN_DIR/$BIN failed"
+  info "Installed $BIN v${version} → $BIN_DIR/$BIN"
+
+  setup_path
+
+  if [[ -n "$client_id" && -n "$client_secret" ]]; then
+    local config_dir="${HOME}/.suppyhq"
+    local config_file="${config_dir}/config.json"
+    mkdir -p "$config_dir"
+    chmod 700 "$config_dir"
+    local resolved_api_url="${api_url:-https://app.suppyhq.com}"
+    cat > "$config_file" <<JSON
 {
   "api_url": "${resolved_api_url}",
   "client_id": "${client_id}",
   "client_secret": "${client_secret}"
 }
 JSON
-  chmod 600 "$config_file"
-  ok "Wrote credentials to ${config_file}"
+    chmod 600 "$config_file"
+    info "Wrote credentials to ${config_file}"
+  fi
+
+  echo ""
+  if [[ "${SUPPYHQ_SKIP_SETUP:-}" == "1" ]]; then
+    step "Skipping agent setup (SUPPYHQ_SKIP_SETUP=1)"
+  else
+    step "Installing agent skill and connecting coding agents"
+    post_install_setup
+  fi
+
+  echo ""
+  echo "  Next steps:"
+  if [[ -n "$client_id" && -n "$client_secret" ]]; then
+    echo "    $(bold "suppyhq auth status")            Verify credentials"
+  else
+    echo "    $(bold "suppyhq auth login")             Authenticate"
+  fi
+  echo "    $(bold "suppyhq setup claude")             Claude Code plugin + skill + MCP hint"
+  echo "    $(bold "suppyhq setup agents")             Every detected agent"
+  echo "    $(bold "suppyhq doctor")                   Check CLI, auth, skill, plugin"
+  echo ""
+  echo "  Docs: https://suppyhq.com/agents"
+  echo ""
+}
+
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
 fi
-
-# Next-steps message.
-cat <<EOF
-
-Next:
-
-EOF
-
-if [ -n "$client_id" ] && [ -n "$client_secret" ]; then
-  cat <<EOF
-  1. Verify
-       suppyhq auth status
-
-EOF
-else
-  cat <<EOF
-  1. Authenticate
-       suppyhq auth login
-
-EOF
-fi
-
-cat <<EOF
-  2. Use it from your AI:
-       Restart your Claude Code (or Cursor / Codex / OpenCode) session,
-       then ask in plain English: "What's in my SuppyHQ inbox?" or
-       "Draft a reply to the latest customer."
-
-  Using a different AI? Run one of these to install the skill:
-       suppyhq install-skill --target=cursor       # Cursor
-       suppyhq install-skill --target=codex        # Codex CLI
-       suppyhq install-skill --target=opencode     # OpenCode
-
-Docs: https://suppyhq.com/agents
-EOF
