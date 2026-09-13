@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "suppyhq",
-      "description": "Drive your SuppyHQ inbox from Claude Code — skill, hooks, and MCP registration hints.",
+      "description": "Drive your SuppyHQ inbox from Claude Code \u2014 skill, hooks, and MCP registration hints.",
       "version": "0.3.0",
       "author": {
         "name": "SuppyHQ"
@@ -16,7 +16,7 @@
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/karloscodes/suppyhq-cli",
-        "path": ".claude-plugin"
+        "path": "."
       }
     }
   ]

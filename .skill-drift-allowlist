@@ -1,0 +1,13 @@
+# Commands and flags the skill mentions that are not in commandCatalog().
+# Same idea as basecamp-cli's .surface-skill-drift: an acknowledged list, so
+# a real regression still fails the build.
+#
+# Format: one entry per line, "suppyhq <path>" or "--flag".
+
+# The skill names these to tell the agent they DON'T exist:
+#   "There's no `suppyhq draft` followed by `suppyhq promote`."
+suppyhq draft
+suppyhq promote
+
+# Dispatched in main.go but deliberately not advertised in the catalog.
+suppyhq help

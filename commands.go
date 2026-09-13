@@ -6,20 +6,20 @@ import (
 )
 
 type commandSpec struct {
-	Name        string         `json:"name"`
-	Path        string         `json:"path"`
-	Short       string         `json:"short"`
-	Subcommands []commandSpec  `json:"subcommands,omitempty"`
-	Flags       []flagSpec     `json:"flags,omitempty"`
-	Notes       []string       `json:"notes,omitempty"`
+	Name        string        `json:"name"`
+	Path        string        `json:"path"`
+	Short       string        `json:"short"`
+	Subcommands []commandSpec `json:"subcommands,omitempty"`
+	Flags       []flagSpec    `json:"flags,omitempty"`
+	Notes       []string      `json:"notes,omitempty"`
 }
 
 type flagSpec struct {
-	Name    string `json:"name"`
+	Name      string `json:"name"`
 	Shorthand string `json:"shorthand,omitempty"`
-	Type    string `json:"type"`
-	Default string `json:"default,omitempty"`
-	Usage   string `json:"usage"`
+	Type      string `json:"type"`
+	Default   string `json:"default,omitempty"`
+	Usage     string `json:"usage"`
 }
 
 func commandCatalog() []commandSpec {
@@ -44,7 +44,10 @@ func commandCatalog() []commandSpec {
 			Name:  "reply",
 			Path:  "suppyhq reply <id> [body]",
 			Short: "Post a reply or save a draft",
-			Flags: []flagSpec{{Name: "draft", Shorthand: "d", Type: "bool", Usage: "Save as draft for operator review"}},
+			Flags: []flagSpec{
+				{Name: "draft", Shorthand: "d", Type: "bool", Usage: "Save as draft for operator review"},
+				{Name: "yes", Shorthand: "y", Type: "bool", Usage: "Send without prompting. Only after the operator has confirmed"},
+			},
 			Notes: []string{"Body via 2nd arg, stdin, or echo pipe", "Default send queues 30s cancel window", "Writes are never auto-retried on 429"},
 		},
 		{Name: "setup", Path: "suppyhq setup", Short: "Install skills and agent plugins", Subcommands: []commandSpec{
@@ -94,9 +97,9 @@ func runAgentHelp(topic string, stdout io.Writer) int {
 	spec, ok := agentHelpFor(topic)
 	if !ok {
 		spec = commandSpec{
-			Name:  "suppyhq",
-			Path:  "suppyhq",
-			Short: "Official CLI for SuppyHQ",
+			Name:        "suppyhq",
+			Path:        "suppyhq",
+			Short:       "Official CLI for SuppyHQ",
 			Subcommands: commandCatalog(),
 			Flags: []flagSpec{
 				{Name: "json", Shorthand: "j", Type: "bool", Usage: "JSON envelope"},

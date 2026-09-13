@@ -2,11 +2,24 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot resolve the path of plugin_test.go")
+	}
+	return filepath.Dir(thisFile)
+}
 
 // Other tests in this package chdir into temp directories, so these read
 // from the repo root resolved off this source file rather than from the
@@ -14,30 +27,39 @@ import (
 func repoFile(t *testing.T, rel string) []byte {
 	t.Helper()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot resolve the path of plugin_test.go")
-	}
-
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), rel))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
 	if err != nil {
 		t.Fatalf("reading %s: %v", rel, err)
 	}
 	return raw
 }
 
-// The skill ships twice: once at skills/ for the Agent Plugins standard
-// (which Cursor and Codex read) and once inside .claude-plugin/ because
-// Claude Code treats that directory as the plugin root. Nothing in the
-// build copies one to the other, so without this test they drift and the
-// Claude Code plugin quietly ships a stale skill.
-func TestSkillCopiesAreIdentical(t *testing.T) {
-	canonical := repoFile(t, "skills/suppyhq/SKILL.md")
-	copied := repoFile(t, ".claude-plugin/skills/suppyhq/SKILL.md")
+// One skill file, and only one. Every plugin manifest points at skills/,
+// the binary embeds it (see the go:embed in main.go), and the moment a
+// second copy appears somewhere it starts going stale in silence.
+func TestExactlyOneSkillFile(t *testing.T) {
+	root := repoRoot(t)
 
-	if string(canonical) != string(copied) {
-		t.Error("skills/suppyhq/SKILL.md and .claude-plugin/skills/suppyhq/SKILL.md have drifted.\n" +
-			"Copy the canonical one over: cp skills/suppyhq/SKILL.md .claude-plugin/skills/suppyhq/SKILL.md")
+	var found []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules") {
+			return fs.SkipDir
+		}
+		if d.Name() == "SKILL.md" {
+			rel, _ := filepath.Rel(root, path)
+			found = append(found, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the repo: %v", err)
+	}
+
+	if len(found) != 1 || found[0] != filepath.Join("skills", "suppyhq", "SKILL.md") {
+		t.Errorf("expected exactly skills/suppyhq/SKILL.md, found %v", found)
 	}
 }
 
@@ -120,5 +142,82 @@ func TestMCPManifestPointsAtThisCLI(t *testing.T) {
 	}
 	if len(server.Args) != 1 || server.Args[0] != "mcp" {
 		t.Errorf("server args are %v, want [mcp]", server.Args)
+	}
+}
+
+// Every `suppyhq ...` command the skill tells an agent to run has to exist.
+//
+// This is the drift that actually costs something: the skill is the contract
+// an agent reads, so a renamed command or a dropped flag means the agent
+// confidently runs something that fails. basecamp-cli checks this against a
+// generated .surface snapshot; commandCatalog() already is that surface, so
+// there's nothing to generate.
+func TestSkillOnlyReferencesRealCommands(t *testing.T) {
+	paths := map[string]bool{}
+	flags := map[string]bool{}
+
+	// Catalog paths carry argument placeholders ("suppyhq thread <id>",
+	// "suppyhq reply <id> [body]"). Index the command words only.
+	commandWords := func(path string) string {
+		var words []string
+		for _, w := range strings.Fields(path) {
+			if strings.HasPrefix(w, "<") || strings.HasPrefix(w, "[") {
+				break
+			}
+			words = append(words, w)
+		}
+		return strings.Join(words, " ")
+	}
+
+	var walk func(specs []commandSpec)
+	walk = func(specs []commandSpec) {
+		for _, spec := range specs {
+			paths[commandWords(spec.Path)] = true
+			for _, f := range spec.Flags {
+				flags["--"+f.Name] = true
+			}
+			walk(spec.Subcommands)
+		}
+	}
+	walk(commandCatalog())
+
+	allowed := map[string]bool{}
+	for _, line := range strings.Split(string(repoFile(t, ".skill-drift-allowlist")), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			allowed[line] = true
+		}
+	}
+
+	skill := string(repoFile(t, "skills/suppyhq/SKILL.md"))
+
+	// Longest match wins: "suppyhq setup claude" before "suppyhq setup".
+	commandRef := regexp.MustCompile(`suppyhq(?: [a-z][a-z-]*){1,3}`)
+	for _, ref := range commandRef.FindAllString(skill, -1) {
+		words := strings.Fields(ref)
+		resolved := false
+		for i := len(words); i > 1; i-- {
+			if paths[strings.Join(words[:i], " ")] {
+				resolved = true
+				break
+			}
+		}
+		if !resolved && !allowed[ref] {
+			t.Errorf("SKILL.md references %q, which is not in commandCatalog(). "+
+				"Add it to the catalog, or to .skill-drift-allowlist if the skill "+
+				"mentions it on purpose.", ref)
+		}
+	}
+
+	// Global flags from usage() apply to every command, so no single
+	// catalog entry declares them.
+	for _, global := range []string{"--help", "--version", "--json", "--quiet", "--agent"} {
+		flags[global] = true
+	}
+	flagRef := regexp.MustCompile(`--[a-z][a-z-]*`)
+	for _, f := range flagRef.FindAllString(skill, -1) {
+		if !flags[f] && !allowed[f] {
+			t.Errorf("SKILL.md references flag %q, which no command in commandCatalog() declares", f)
+		}
 	}
 }

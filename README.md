@@ -77,8 +77,13 @@ npx skills add karloscodes/suppyhq-cli -a claude-code
 ```
 
 Clients that read their own manifest find one too: `.claude-plugin/plugin.json`
-for Claude Code, `.cursor-plugin/plugin.json` for Cursor. All of them name the
-same plugin at the same version, and a test fails the build if they disagree.
+for Claude Code, `.cursor-plugin/plugin.json` for Cursor, `.codex-plugin/plugin.json`
+for Codex. Every one of them points at the same `skills/` directory, which the
+binary also embeds, so the skill exists exactly once in this repo.
+
+Tests keep it honest: the manifests must agree on name and version, only one
+`SKILL.md` may exist, and every command and flag the skill mentions must exist
+in `commandCatalog()`. Deliberate exceptions live in `.skill-drift-allowlist`.
 
 Restart your agent session after installing.
 
