@@ -69,7 +69,7 @@ func classifyHTTPError(status int, body string, isWrite bool) error {
 	case 401:
 		return errAuth("Unauthorized", "Run: suppyhq auth login")
 	case 403:
-		return errForbidden("Forbidden", "Grant the required scope at https://app.suppyhq.com/agents")
+		return errForbidden("Forbidden", "This agent lacks the permission for that action. If it was a send, save the reply with --draft instead. Permissions are set at authorization: re-run suppyhq auth login (add --allow-send to send).")
 	case 429:
 		hint := "Back off using the 1s / 2s / 4s schedule, then hold 60s if still limited."
 		if isWrite {
