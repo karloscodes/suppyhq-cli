@@ -819,30 +819,65 @@ func fetchToken(cfg *config) (string, error) {
 	if cfg.AccessToken != "" {
 		return cfg.AccessToken, nil
 	}
+
+	var lastErr error
+	for _, scope := range clientCredentialsScopes {
+		token, invalidScope, err := requestClientCredentialsToken(cfg, scope)
+		if err == nil {
+			return token, nil
+		}
+		lastErr = err
+		if !invalidScope {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+// The server refuses a client_credentials request for any scope the
+// application doesn't hold. Agents created before the draft/send split
+// hold `read reply`; agents created after hold some of `read draft send`.
+// Asking for one fixed set locks the other group out, so ask for the
+// widest set first and step down only when the server says invalid_scope.
+var clientCredentialsScopes = []string{
+	"read draft send",
+	"read reply",
+	"read draft",
+	"read",
+}
+
+func requestClientCredentialsToken(cfg *config, scope string) (token string, invalidScope bool, err error) {
 	resp, err := http.PostForm(cfg.APIURL+"/oauth/token", url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
-		"scope":         {"read reply"},
+		"scope":         {scope},
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+		var oauthErr struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &oauthErr)
+		return "", oauthErr.Error == "invalid_scope",
+			fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
+
 	var tokenResp struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("no access_token in response: %s", string(body))
+		return "", false, fmt.Errorf("no access_token in response: %s", string(body))
 	}
-	return tokenResp.AccessToken, nil
+	return tokenResp.AccessToken, false, nil
 }
 
 func loadConfig() (*config, error) {
