@@ -609,7 +609,7 @@ func TestGeneratePKCE(t *testing.T) {
 }
 
 func TestBuildCliAuthorizeURL(t *testing.T) {
-	got := buildCliAuthorizeURL("https://example.test", "Claude", "CHAL", "http://127.0.0.1:31337/cb", "STATE")
+	got := buildCliAuthorizeURL("https://example.test", "Claude", "CHAL", "http://127.0.0.1:31337/cb", "STATE", false)
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatal(err)
@@ -636,8 +636,21 @@ func TestBuildCliAuthorizeURL(t *testing.T) {
 	if q.Get("state") != "STATE" {
 		t.Errorf("state: %q", q.Get("state"))
 	}
-	if q.Get("scope") != "read reply" {
+	if q.Get("scope") != "read draft" {
 		t.Errorf("scope: %q", q.Get("scope"))
+	}
+}
+
+// Sending is the permission that emails real customers, so the CLI never
+// asks for it unless the operator said so on the command line.
+func TestBuildCliAuthorizeURL_SendIsOptIn(t *testing.T) {
+	withSend := buildCliAuthorizeURL("https://example.test", "Claude", "CHAL", "http://127.0.0.1:31337/cb", "STATE", true)
+	u, err := url.Parse(withSend)
+	if err != nil {
+		t.Fatalf("parsing url: %v", err)
+	}
+	if scope := u.Query().Get("scope"); scope != "read draft send" {
+		t.Errorf("with --allow-send, scope: %q", scope)
 	}
 }
 
@@ -907,10 +920,10 @@ func TestSaveConfig_HasOmittedFieldsInJSON(t *testing.T) {
 
 func TestSplitReplyFlags(t *testing.T) {
 	cases := []struct {
-		in       []string
-		wantRest []string
+		in        []string
+		wantRest  []string
 		wantDraft bool
-		wantYes  bool
+		wantYes   bool
 	}{
 		{[]string{"42"}, []string{"42"}, false, false},
 		{[]string{"42", "--draft"}, []string{"42"}, true, false},

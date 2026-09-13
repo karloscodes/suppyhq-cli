@@ -373,6 +373,7 @@ func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // history, or any AI agent's context window.
 func runAuthLogin(args []string, stdin io.Reader, stdout io.Writer) error {
 	manual := false
+	allowSend := false
 	name := ""
 	apiURLFlag := ""
 	for i := 0; i < len(args); i++ {
@@ -380,6 +381,8 @@ func runAuthLogin(args []string, stdin io.Reader, stdout io.Writer) error {
 		switch {
 		case a == "--manual":
 			manual = true
+		case a == "--allow-send":
+			allowSend = true
 		case strings.HasPrefix(a, "--name="):
 			name = strings.TrimPrefix(a, "--name=")
 		case strings.HasPrefix(a, "--api-url="):
@@ -390,14 +393,14 @@ func runAuthLogin(args []string, stdin io.Reader, stdout io.Writer) error {
 	if manual {
 		return runAuthLoginManual(stdin, stdout, apiURLFlag)
 	}
-	return runAuthLoginBrowser(stdin, stdout, name, apiURLFlag)
+	return runAuthLoginBrowser(stdin, stdout, name, apiURLFlag, allowSend)
 }
 
 // runAuthLoginBrowser is the default. PKCE + loopback redirect, modeled
 // on basecamp + gumroad. The token only ever lives between the server
 // and the CLI process; never in the clipboard, shell history, or an
 // AI's context window.
-func runAuthLoginBrowser(stdin io.Reader, stdout io.Writer, name, apiURLFlag string) error {
+func runAuthLoginBrowser(stdin io.Reader, stdout io.Writer, name, apiURLFlag string, allowSend bool) error {
 	fmt.Fprintln(stdout, "suppyhq auth login")
 	fmt.Fprintln(stdout)
 
@@ -435,7 +438,7 @@ func runAuthLoginBrowser(stdin io.Reader, stdout io.Writer, name, apiURLFlag str
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/cb", port)
 
-	authURL := buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state)
+	authURL := buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state, allowSend)
 
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "Opening your browser to approve the CLI…")
@@ -535,13 +538,21 @@ func randomString(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state string) string {
+// Requests read+draft. Sending is left out unless the operator passes
+// --allow-send, so the consent screen comes up with the box that emails
+// customers already unticked. They can still tick it there; the point is
+// that nobody grants it by not reading.
+func buildCliAuthorizeURL(apiURL, name, challenge, redirectURI, state string, allowSend bool) string {
+	scope := "read draft"
+	if allowSend {
+		scope = "read draft send"
+	}
 	q := url.Values{
 		"name":                  {name},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"redirect_uri":          {redirectURI},
-		"scope":                 {"read reply"},
+		"scope":                 {scope},
 		"state":                 {state},
 	}
 	return strings.TrimRight(apiURL, "/") + "/cli_authorization/new?" + q.Encode()
