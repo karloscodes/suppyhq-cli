@@ -66,11 +66,19 @@ Grab the [latest release](https://github.com/karloscodes/suppyhq-cli/releases/la
 
 ## Skill + plugin
 
+This repo is an [Agent Plugins](https://agent-plugins.org) package. `plugin.json`
+and `mcp.json` sit at the root next to `skills/`, so any client that reads the
+1.0.0 standard installs the skill and registers the MCP server in one step.
+
 ```bash
 suppyhq setup claude                    # plugin + skill + MCP hint
 suppyhq install-skill --target=cursor   # Cursor (project-scoped)
 npx skills add karloscodes/suppyhq-cli -a claude-code
 ```
+
+Clients that read their own manifest find one too: `.claude-plugin/plugin.json`
+for Claude Code, `.cursor-plugin/plugin.json` for Cursor. All of them name the
+same plugin at the same version, and a test fails the build if they disagree.
 
 Restart your agent session after installing.
 

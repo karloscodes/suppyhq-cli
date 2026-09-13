@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "suppyhq",
+  "version": "0.3.0",
+  "description": "Drive your SuppyHQ support inbox from your coding agent. Read conversations and customers, draft and send replies.",
+  "author": {
+    "name": "SuppyHQ",
+    "email": "hello@suppyhq.com",
+    "url": "https://suppyhq.com"
+  },
+  "homepage": "https://suppyhq.com/agents",
+  "repository": "https://github.com/karloscodes/suppyhq-cli",
+  "license": "MIT",
+  "keywords": ["support", "inbox", "customer-support", "email", "helpdesk"]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "suppyhq",
+  "version": "0.3.0",
+  "description": "Drive your SuppyHQ support inbox from Cursor. Read conversations and customers, draft and send replies.",
+  "author": {
+    "name": "SuppyHQ"
+  }
+}
