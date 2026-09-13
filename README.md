@@ -64,28 +64,70 @@ The installer downloads the binary, runs `suppyhq setup agents` (skill + best-ef
 
 Grab the [latest release](https://github.com/karloscodes/suppyhq-cli/releases/latest).
 
-## Skill + plugin
+## Install the plugin
 
-This repo is an [Agent Plugins](https://agent-plugins.org) package. `plugin.json`
-and `mcp.json` sit at the root next to `skills/`, so any client that reads the
-1.0.0 standard installs the skill and registers the MCP server in one step.
+One install per agent. Each one gives you the skill (how to work an inbox) and
+the `suppyhq` MCP server (the tools it calls). Restart the agent session after.
+
+### Claude Code
 
 ```bash
-suppyhq setup claude                    # plugin + skill + MCP hint
-suppyhq install-skill --target=cursor   # Cursor (project-scoped)
-npx skills add karloscodes/suppyhq-cli -a claude-code
+suppyhq setup claude
 ```
 
-Clients that read their own manifest find one too: `.claude-plugin/plugin.json`
-for Claude Code, `.cursor-plugin/plugin.json` for Cursor, `.codex-plugin/plugin.json`
-for Codex. Every one of them points at the same `skills/` directory, which the
-binary also embeds, so the skill exists exactly once in this repo.
+Or from the marketplace, without the CLI doing it for you:
 
-Tests keep it honest: the manifests must agree on name and version, only one
-`SKILL.md` may exist, and every command and flag the skill mentions must exist
+```
+/plugin marketplace add karloscodes/suppyhq-cli
+/plugin install suppyhq
+```
+
+### Cursor
+
+```bash
+suppyhq setup cursor
+```
+
+Cursor reads skills per project, so run this from the repo you want it in.
+To install it as a plugin instead, point Cursor at this repo from
+*Dashboard > Plugins > Add Marketplace > Import from Repo*.
+
+### Codex
+
+```bash
+suppyhq setup codex
+```
+
+### opencode
+
+```bash
+suppyhq install-skill --target=opencode
+```
+
+opencode loads Agent Skills directly, so the skill is the whole install. Register
+the MCP server in your opencode config as a stdio server running `suppyhq mcp`.
+
+### Everything you have
+
+```bash
+suppyhq setup agents     # skill + every agent found on this machine
+suppyhq doctor           # check CLI, auth, skill, and plugin health
+```
+
+## How the plugin is put together
+
+This repo is an [Agent Plugins](https://agent-plugins.org) 1.0.0 package.
+`plugin.json` and `mcp.json` sit at the root next to `skills/`, so a client that
+reads the standard gets the skill and the MCP server in one step.
+
+Clients that prefer their own manifest find one: `.claude-plugin/plugin.json`,
+`.cursor-plugin/plugin.json`, `.codex-plugin/plugin.json`. All of them point at
+the same `skills/` directory, which the binary also embeds, so the skill exists
+exactly once here.
+
+Tests keep it honest. The manifests must agree on name and version, only one
+`SKILL.md` may exist, and every command and flag the skill mentions has to exist
 in `commandCatalog()`. Deliberate exceptions live in `.skill-drift-allowlist`.
-
-Restart your agent session after installing.
 
 ## Configuration
 
