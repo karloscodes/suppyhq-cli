@@ -32,7 +32,11 @@ func commandCatalog() []commandSpec {
 				{Name: "login", Path: "suppyhq auth login", Short: "Browser OAuth (default) or --manual paste flow", Flags: []flagSpec{
 					{Name: "manual", Type: "bool", Usage: "Paste Client ID + Secret instead of browser OAuth"},
 					{Name: "name", Type: "string", Usage: "Agent name for browser OAuth"},
-				}, Notes: []string{"Browser login is default. Token never touches clipboard."}},
+					{Name: "allow-send", Type: "bool", Usage: "Also ask for permission to send replies. Without it the agent can read and draft only"},
+				}, Notes: []string{
+					"Browser login is default. Token never touches clipboard.",
+					"Asks for read + draft. Sending is a separate permission you tick on the consent screen.",
+				}},
 				{Name: "status", Path: "suppyhq auth status", Short: "Show who is authenticated"},
 				{Name: "logout", Path: "suppyhq auth logout", Short: "Forget stored credentials"},
 			},

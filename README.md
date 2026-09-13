@@ -12,7 +12,7 @@ suppyhq setup claude
 
 | Command | What it does |
 |---|---|
-| `suppyhq auth login` | Browser OAuth (default). `--manual` for paste flow. |
+| `suppyhq auth login` | Browser OAuth (default). `--manual` for paste flow. Asks for read + draft; add `--allow-send` to also request permission to send. |
 | `suppyhq auth status` | Show who's authenticated. |
 | `suppyhq setup claude` | Claude Code plugin + skill + MCP registration hint. |
 | `suppyhq setup agents` | Skill + every detected coding agent. |
