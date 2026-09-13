@@ -1,6 +1,6 @@
 {
   "name": "suppyhq",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Use your SuppyHQ support inbox from Codex. Read conversations, draft replies, send or save them.",
   "author": {
     "name": "SuppyHQ",
@@ -17,7 +17,11 @@
     "longDescription": "Read conversations and customer history, draft replies in your own voice, and send them or leave them as drafts for a human to approve. Requires the SuppyHQ CLI (suppyhq) installed and on your PATH.",
     "developerName": "SuppyHQ",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://suppyhq.com/agents",
     "defaultPrompt": [
       "Show me the SuppyHQ conversations waiting on a reply.",

@@ -31,8 +31,16 @@ archives:
     files:
       - LICENSE
       - README.md
+      # The skill lives once, at skills/. Every plugin manifest points at it,
+      # so the archive needs it explicitly now that .claude-plugin/ no longer
+      # carries a copy.
+      - skills/**
+      - plugin.json
+      - mcp.json
       - claude-plugins/**
       - .claude-plugin/**
+      - .cursor-plugin/**
+      - .codex-plugin/**
 
 checksum:
   name_template: "checksums.txt"
