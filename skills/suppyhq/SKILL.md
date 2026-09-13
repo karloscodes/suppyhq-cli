@@ -1,6 +1,6 @@
 ---
 name: suppyhq
-description: Drive a SuppyHQ inbox from the command line. Read conversations and customers, post replies (or save them as drafts). The CLI talks to the SuppyHQ Agents API using OAuth2 client-credentials. Output is JSON.
+description: Drive a SuppyHQ inbox from the command line. Read conversations and customers, save replies as drafts, and send them when the agent has permission. The CLI talks to the SuppyHQ Agents API over OAuth. Output is JSON.
 triggers:
   - suppyhq
   - /suppyhq
@@ -107,6 +107,8 @@ On an interactive terminal, `suppyhq reply <id>` (without `--draft`) prompts **S
 
 Goes out after a 30-second cancel window. Use send *only* when the operator's intent is unambiguous: they said "send", "handle", "answer for me", "ship it", or set up full-auto mode.
 
+**Sending needs its own permission.** Intent is not enough on its own: if this agent wasn't granted `send`, `reply --yes` fails with `403 Forbidden` and nothing reaches the customer. When that happens, don't retry and don't look for another way to send. Save the same body with `--draft` and tell the operator: *"I don't have permission to send, so I saved it as a draft in your composer. To let me send, re-run `suppyhq auth login --allow-send` and tick Send replies."*
+
 ### Draft rules
 
 These are the rules every agent must follow. They're short. Memorize them.
@@ -182,14 +184,22 @@ Env vars take precedence over the config file.
 
 ## Scopes
 
-An agent has one of exactly **two** permission shapes. There is no "reply-only" agent — replying needs context, so `reply` is always paired with `read`.
+Reading, drafting and sending are three separate permissions. The operator picks them on the consent screen when they run `suppyhq auth login`, and they're fixed on the token after that.
 
 | Permission | Scope tokens | What you can do |
 |---|---|---|
-| **Read only** | `read` | `inbox`, `thread`, `customers` — list and inspect, no writes. Good for triage / audit / digest agents. |
-| **Read + reply** | `read reply` | All of the above, plus `reply` (with or without `--draft`). Sent emails carry an attribution footer naming the agent. The default for most agents. |
+| **Read only** | `read` | `inbox`, `thread`, `customers`. List and inspect, no writes. Good for triage, audit and digest agents. |
+| **Read + draft** | `read draft` | Everything above, plus `reply --draft`. The draft lands in the operator's composer and reaches nobody until a human sends it. This is what `suppyhq auth login` asks for by default. |
+| **Read + draft + send** | `read draft send` | Everything above, plus `reply --yes`. The customer's email carries a footer naming this agent. Only granted when the operator ticks Send replies, which `suppyhq auth login --allow-send` pre-ticks. |
 
-Check the operator's intent before assuming. If they say "draft me a reply" and `reply` isn't in your scopes, tell them — don't try to fake it by, say, copying the body into a `notes` call.
+Agents connected before drafting and sending were split may hold `read reply`. That older permission can still draft and send.
+
+What each missing permission looks like:
+
+- No `draft`: `reply --draft` returns `403 Forbidden`. Tell the operator you can only read.
+- No `send`: `reply --yes` returns `403 Forbidden`. Save the body with `--draft` instead and tell the operator (see "Reply: decide draft or send").
+
+Never try to get around a missing permission, for example by pasting the body into a note or asking the operator for another agent's credentials. The permission is the operator's decision.
 
 ## Rate limits
 
@@ -211,5 +221,5 @@ Don't retry on any other status — `4xx` is permanent (fix the input), `5xx` li
 
 - `not authenticated` → `suppyhq auth login`
 - `401 Unauthorized` → token rejected; rerun `suppyhq auth login` and re-paste credentials
-- `403 Forbidden` → the agent doesn't have the required scope. The action's scope is in the error body. Edit the agent at `https://app.suppyhq.com/agents` to grant it.
+- `403 Forbidden` → the agent doesn't have the permission for that action. On a send, save the body with `--draft` instead. Permissions are fixed when the agent is authorized, so adding one means the operator re-runs `suppyhq auth login` (`--allow-send` for sending) and ticks the box.
 - `429 Too Many Requests` → see "Rate limits" above. Retry with the 1s / 2s / 4s schedule, then give up.

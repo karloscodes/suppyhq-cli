@@ -1,6 +1,6 @@
 {
   "name": "suppyhq",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "SuppyHQ inbox integration for Claude Code \u2014 triage conversations, draft replies, MCP tools.",
   "author": {
     "name": "SuppyHQ",

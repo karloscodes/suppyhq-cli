@@ -153,7 +153,7 @@ func apiErrorHint(status int) string {
 	case 401:
 		return "Run: suppyhq auth login"
 	case 403:
-		return "Grant the required scope at https://app.suppyhq.com/agents"
+		return "This agent lacks the permission for that action. If it was a send, save the reply with --draft instead. Permissions are set at authorization: re-run suppyhq auth login (add --allow-send to send)."
 	case 404:
 		return "Check the conversation or customer id."
 	case 429:
