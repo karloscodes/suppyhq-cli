@@ -1,6 +1,6 @@
 # suppyhq-cli
 
-Official CLI for [SuppyHQ](https://suppyhq.com). Drive your inbox from the terminal — or let an AI agent (Claude Code, Cursor, Codex, OpenCode) do it for you.
+Official CLI for [SuppyHQ](https://suppyhq.com). Drive your inbox from the terminal — or let an AI agent (Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, opencode) do it for you.
 
 ```bash
 curl -fsSL https://suppyhq.com/install-cli | bash
@@ -98,6 +98,20 @@ To install it as a plugin instead, point Cursor at this repo from
 suppyhq setup codex
 ```
 
+Or as a plugin: `codex plugin marketplace add karloscodes/suppyhq-cli`.
+
+### GitHub Copilot CLI
+
+```bash
+copilot plugin install karloscodes/suppyhq-cli
+```
+
+### Gemini CLI
+
+```bash
+gemini extensions install https://github.com/karloscodes/suppyhq-cli
+```
+
 ### opencode
 
 ```bash
@@ -120,10 +134,20 @@ This repo is an [Agent Plugins](https://agent-plugins.org) 1.0.0 package.
 `plugin.json` and `mcp.json` sit at the root next to `skills/`, so a client that
 reads the standard gets the skill and the MCP server in one step.
 
-Clients that prefer their own manifest find one: `.claude-plugin/plugin.json`,
-`.cursor-plugin/plugin.json`, `.codex-plugin/plugin.json`. All of them point at
-the same `skills/` directory, which the binary also embeds, so the skill exists
-exactly once here.
+Clients that prefer their own manifest find one:
+
+| Client | Manifest | Marketplace |
+|---|---|---|
+| Claude Code | `.claude-plugin/plugin.json` | `.claude-plugin/marketplace.json` |
+| Codex | `.codex-plugin/plugin.json` | `.claude-plugin/marketplace.json` |
+| Cursor | `.cursor-plugin/plugin.json` | `.cursor-plugin/marketplace.json` |
+| Copilot CLI | `plugin.json` | `.claude-plugin/marketplace.json` |
+| Gemini CLI | `gemini-extension.json` | none, installs from the repo URL |
+
+All of them load the same `skills/` directory, which the binary also embeds, so
+the skill exists exactly once here. All of them register the same `suppyhq mcp`
+server from `mcp.json`. Gemini inlines it, because its manifest can't point at a
+file.
 
 Tests keep it honest. The manifests must agree on name and version, only one
 `SKILL.md` may exist, and every command and flag the skill mentions has to exist

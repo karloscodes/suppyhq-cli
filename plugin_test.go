@@ -63,14 +63,17 @@ func TestExactlyOneSkillFile(t *testing.T) {
 	}
 }
 
-// Four manifests name the same plugin, and a version that disagrees across
+// Every manifest names the same plugin, and a version that disagrees across
 // them means one client installs something it shouldn't.
 func TestPluginManifestsAgree(t *testing.T) {
 	manifests := map[string]string{
-		"plugin.json":                     "", // Agent Plugins 1.0.0 (Cursor, Codex)
+		"plugin.json":                     "", // Agent Plugins 1.0.0 (Copilot CLI, Codex)
 		".claude-plugin/plugin.json":      "", // Claude Code
-		".cursor-plugin/plugin.json":      "", // Cursor native
-		"claude-plugins/marketplace.json": "",
+		".claude-plugin/marketplace.json": "", // Claude Code, Codex, Copilot CLI
+		".cursor-plugin/plugin.json":      "", // Cursor
+		".cursor-plugin/marketplace.json": "", // Cursor
+		".codex-plugin/plugin.json":       "", // Codex
+		"gemini-extension.json":           "", // Gemini CLI
 	}
 
 	versions := map[string]string{}
@@ -220,4 +223,38 @@ func TestSkillOnlyReferencesRealCommands(t *testing.T) {
 			t.Errorf("SKILL.md references flag %q, which no command in commandCatalog() declares", f)
 		}
 	}
+}
+
+// Native manifests that don't read mcp.json by default must point at it, or
+// the client installs the skill and silently drops the MCP server.
+func TestNativeManifestsLoadTheMCPServer(t *testing.T) {
+	for _, path := range []string{".claude-plugin/plugin.json", ".cursor-plugin/plugin.json", ".codex-plugin/plugin.json"} {
+		var parsed struct {
+			MCPServers string `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(repoFile(t, path), &parsed); err != nil {
+			t.Fatalf("%s is not valid JSON: %v", path, err)
+		}
+
+		if parsed.MCPServers != "./mcp.json" {
+			t.Errorf("%s: mcpServers is %q, want \"./mcp.json\"", path, parsed.MCPServers)
+		}
+	}
+
+	t.Run("gemini inlines the same server", func(t *testing.T) {
+		var parsed struct {
+			MCPServers map[string]struct {
+				Command string   `json:"command"`
+				Args    []string `json:"args"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(repoFile(t, "gemini-extension.json"), &parsed); err != nil {
+			t.Fatalf("gemini-extension.json is not valid JSON: %v", err)
+		}
+
+		server := parsed.MCPServers["suppyhq"]
+		if server.Command != "suppyhq" || len(server.Args) != 1 || server.Args[0] != "mcp" {
+			t.Errorf("gemini suppyhq server is %+v, want suppyhq [mcp]", server)
+		}
+	})
 }

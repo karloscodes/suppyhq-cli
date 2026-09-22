@@ -37,7 +37,7 @@ archives:
       - skills/**
       - plugin.json
       - mcp.json
-      - claude-plugins/**
+      - gemini-extension.json
       - .claude-plugin/**
       - .cursor-plugin/**
       - .codex-plugin/**

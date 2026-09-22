@@ -1,6 +1,6 @@
 {
   "name": "suppyhq",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Use your SuppyHQ support inbox from Codex. Read conversations, draft replies, send or save them.",
   "author": {
     "name": "SuppyHQ",
@@ -11,6 +11,7 @@
   "repository": "https://github.com/karloscodes/suppyhq-cli",
   "license": "MIT",
   "skills": "./skills/",
+  "mcpServers": "./mcp.json",
   "interface": {
     "displayName": "SuppyHQ",
     "shortDescription": "Work your support inbox from Codex.",

@@ -1,0 +1,15 @@
+{
+  "name": "suppyhq",
+  "owner": {
+    "name": "SuppyHQ",
+    "email": "hello@suppyhq.com"
+  },
+  "plugins": [
+    {
+      "name": "suppyhq",
+      "description": "Drive your SuppyHQ inbox from Cursor: skill and MCP server.",
+      "version": "0.4.4",
+      "source": "./"
+    }
+  ]
+}

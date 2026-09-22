@@ -1,0 +1,19 @@
+{
+  "name": "suppyhq",
+  "description": "SuppyHQ agent integrations",
+  "owner": {
+    "name": "SuppyHQ",
+    "email": "hello@suppyhq.com"
+  },
+  "plugins": [
+    {
+      "name": "suppyhq",
+      "description": "Drive your SuppyHQ inbox from your coding agent: skill, MCP server, and session hook.",
+      "version": "0.4.4",
+      "author": {
+        "name": "SuppyHQ"
+      },
+      "source": "./"
+    }
+  ]
+}
