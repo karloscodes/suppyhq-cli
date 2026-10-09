@@ -15,11 +15,11 @@ import (
 const mcpDescribeAction = "describe"
 
 type mcpDomain struct {
-	name      string
-	toolName  string
-	title     string
-	readOnly  bool
-	actions   map[string]mcpAction
+	name     string
+	toolName string
+	title    string
+	readOnly bool
+	actions  map[string]mcpAction
 }
 
 type mcpAction struct {
@@ -33,12 +33,15 @@ func allMCPDomains() []mcpDomain {
 		{
 			name: "conversations", toolName: "suppyhq_conversations", title: "SuppyHQ Conversations",
 			actions: map[string]mcpAction{
-				"list":  {name: "list", readOnly: true, schema: map[string]any{"type": "object", "properties": map[string]any{}}},
-				"show":  {name: "show", readOnly: true, schema: map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string", "description": "Conversation id"}}, "required": []string{"id"}}},
+				"list": {name: "list", readOnly: true, schema: map[string]any{"type": "object", "properties": map[string]any{}}},
+				"show": {name: "show", readOnly: true, schema: map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string", "description": "Conversation id"}}, "required": []string{"id"}}},
 				"reply": {name: "reply", readOnly: false, schema: map[string]any{"type": "object", "properties": map[string]any{
 					"id": map[string]any{"type": "string"}, "body_html": map[string]any{"type": "string"},
 					"draft": map[string]any{"type": "boolean"}, "confirm": map[string]any{"type": "boolean", "description": "Required true to send (not draft)"},
 				}, "required": []string{"id", "body_html"}}},
+				"note": {name: "note", readOnly: false, schema: map[string]any{"type": "object", "properties": map[string]any{
+					"id": map[string]any{"type": "string", "description": "Conversation id"}, "body": map[string]any{"type": "string", "description": "Internal note. The customer never sees it."},
+				}, "required": []string{"id", "body"}}},
 			},
 		},
 		{
@@ -247,6 +250,17 @@ func executeMCPAction(cfg *config, d mcpDomain, action mcpAction, params map[str
 			form.Set("draft", "true")
 		}
 		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+id+"/messages", form)
+		if err != nil {
+			return mcpError("%v", err), nil
+		}
+		return mcpRawJSON(body)
+	case "conversations.note":
+		id := paramString(params, "id")
+		text := paramString(params, "body")
+		if id == "" || text == "" {
+			return mcpError("params.id and params.body are required"), nil
+		}
+		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+id+"/notes", url.Values{"body": {text}})
 		if err != nil {
 			return mcpError("%v", err), nil
 		}

@@ -1013,6 +1013,41 @@ func TestRun_ReplyDraftSetsParam(t *testing.T) {
 	}
 }
 
+func TestRun_NotePostsToNotes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			w.Write([]byte(`{"access_token":"tok"}`))
+		case "/api/v1/conversations/42/notes":
+			r.ParseForm()
+			if r.PostForm.Get("body") != "Checked Stripe: charged twice." {
+				t.Errorf("body: %v", r.PostForm)
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":7}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	saveConfig(&config{APIURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"note", "42", "Checked Stripe: charged twice."}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("got %d (stderr=%s)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"id"`) {
+		t.Errorf("missing note id: %s", stdout.String())
+	}
+}
+
 func TestVerifyChecksum_Match(t *testing.T) {
 	tmp := t.TempDir()
 	archive := filepath.Join(tmp, "suppyhq_0.1.0_darwin_arm64.tar.gz")

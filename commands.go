@@ -54,6 +54,12 @@ func commandCatalog() []commandSpec {
 			},
 			Notes: []string{"Body via 2nd arg, stdin, or echo pipe", "Default send queues 30s cancel window", "Writes are never auto-retried on 429"},
 		},
+		{
+			Name:  "note",
+			Path:  "suppyhq note <id> [text]",
+			Short: "Leave an internal note on a conversation",
+			Notes: []string{"Never reaches the customer", "Requires draft scope", "Text via 2nd arg, stdin, or echo pipe"},
+		},
 		{Name: "setup", Path: "suppyhq setup", Short: "Install skills and agent plugins", Subcommands: []commandSpec{
 			{Name: "claude", Path: "suppyhq setup claude", Short: "Claude Code plugin + skill + MCP hint"},
 			{Name: "cursor", Path: "suppyhq setup cursor", Short: "Cursor skill (project-scoped)"},

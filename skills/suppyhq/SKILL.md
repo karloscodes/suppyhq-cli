@@ -9,6 +9,7 @@ triggers:
   - suppyhq reply
   - suppyhq customers
   - suppyhq thread
+  - suppyhq note
 invocable: true
 argument-hint: "[command] [args...]"
 ---
@@ -74,6 +75,15 @@ suppyhq customers              # list customers
 
 All return JSON. Pipe through `jq` for filtering, or feed straight into an LLM for summarization.
 
+### Note: tell the team what you found
+
+```bash
+suppyhq note <id> "Checked Stripe: charged twice on Oct 2, refund not issued yet."
+echo "Their license key was revoked on Sep 30." | suppyhq note <id>
+```
+
+A note is internal. The customer never sees it. The thread shows it as "Note · <your agent name>". Leave one when you looked something up, so the person who answers doesn't repeat the work. Keep it to facts you checked; don't draft the reply in a note.
+
 ### Reply: decide draft or send
 
 **Default behavior: save as a draft.** Sending should be the exception, not the rule.
@@ -136,6 +146,7 @@ echo "<p>Refunded.</p>" | suppyhq reply 42 --yes
 ## What the agent should do
 
 - **Read first, write second.** Summarize what's open before composing replies.
+- **Leave a note for what you checked.** A refund status, a license state, a log line: one short `suppyhq note` saves the operator the same lookup.
 - **Match the operator's tone, not their identity.** Read past replies for cadence; don't sign as them.
 - **Default to draft mode** when the operator hasn't said "send" or "handle".
 - **One thread at a time.** Don't batch replies across multiple threads.
@@ -189,7 +200,7 @@ Reading, drafting and sending are three separate permissions. The operator picks
 | Permission | Scope tokens | What you can do |
 |---|---|---|
 | **Read only** | `read` | `inbox`, `thread`, `customers`. List and inspect, no writes. Good for triage, audit and digest agents. |
-| **Read + draft** | `read draft` | Everything above, plus `reply --draft`. The draft lands in the operator's composer and reaches nobody until a human sends it. This is what `suppyhq auth login` asks for by default. |
+| **Read + draft** | `read draft` | Everything above, plus `reply --draft` and `note`. The draft lands in the operator's composer and reaches nobody until a human sends it. This is what `suppyhq auth login` asks for by default. |
 | **Read + draft + send** | `read draft send` | Everything above, plus `reply --yes`. The customer's email carries a footer naming this agent. Only granted when the operator ticks Send replies, which `suppyhq auth login --allow-send` pre-ticks. |
 
 Agents connected before drafting and sending were split may hold `read reply`. That older permission can still draft and send.

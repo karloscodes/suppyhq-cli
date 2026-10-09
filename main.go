@@ -249,6 +249,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			summary = "draft saved"
 		}
 		return emitSuccess(stdout, outMode, data, summary, threadBreadcrumbs(positional[0], !draft))
+	case "note":
+		// An internal note on a thread. It never reaches the customer, so it
+		// needs only the draft scope and asks for no confirmation.
+		if len(rest) < 1 {
+			return emitError(stderr, stdout, outMode, errUsage("note: usage — suppyhq note <conversation_id> <text>  (or pipe text to stdin)"))
+		}
+		text := readReplyBody(rest, stdin)
+		if text == "" {
+			return emitError(stderr, stdout, outMode, errUsage("note: empty text"))
+		}
+		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+rest[0]+"/notes", url.Values{"body": {text}})
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		data, err := decodeJSONData(body)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		return emitSuccess(stdout, outMode, data, "note added", threadBreadcrumbs(rest[0], false))
 	default:
 		return emitError(stderr, stdout, outMode, errUsage("unknown command: "+cmd))
 	}
