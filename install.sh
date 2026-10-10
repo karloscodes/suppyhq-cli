@@ -175,9 +175,11 @@ main() {
   local url="https://github.com/${REPO}/releases/download/v${version}/${archive}"
   local checksums_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
 
-  local tmp
-  tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  # Global, not local: the EXIT trap runs after this function returns,
+  # and under `set -u` a local would be unbound by then.
+  TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  local tmp="$TMP_DIR"
 
   step "Downloading ${archive}"
   curl -fsSL "$url" -o "$tmp/$archive" || error "download failed: $url"
