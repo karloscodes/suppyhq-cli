@@ -1,7 +1,8 @@
 {
   "name": "suppyhq",
+  "displayName": "SuppyHQ",
   "version": "0.4.4",
-  "description": "Drive your SuppyHQ support inbox from Cursor. Read conversations and customers, draft and send replies.",
+  "description": "Work your SuppyHQ support inbox from your coding agent. Read customer history, draft replies, and send only if you allow it.",
   "author": {
     "name": "SuppyHQ",
     "email": "hello@suppyhq.com"
@@ -9,6 +10,14 @@
   "homepage": "https://suppyhq.com/agents",
   "repository": "https://github.com/karloscodes/suppyhq-cli",
   "license": "MIT",
+  "logo": "assets/logo.png",
+  "keywords": [
+    "support",
+    "inbox",
+    "customer-support",
+    "email",
+    "helpdesk"
+  ],
   "skills": "./skills/",
   "mcpServers": "./mcp.json"
 }

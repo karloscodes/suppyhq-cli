@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "suppyhq",
-      "description": "Drive your SuppyHQ inbox from Cursor: skill and MCP server.",
+      "description": "Work your SuppyHQ support inbox from your coding agent. Read customer history, draft replies, and send only if you allow it.",
       "version": "0.4.4",
       "source": "./"
     }
