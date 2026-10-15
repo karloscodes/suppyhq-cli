@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "suppyhq",
-      "description": "Work your SuppyHQ support inbox from Cursor. Read customer history, draft replies, and send only if you allow it.",
+      "description": "Work your SuppyHQ support inbox from your coding agent. Read customer history, draft replies, and send only if you allow it.",
       "version": "0.4.4",
       "source": "./"
     }

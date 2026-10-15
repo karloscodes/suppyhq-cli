@@ -2,7 +2,7 @@
   "name": "suppyhq",
   "displayName": "SuppyHQ",
   "version": "0.4.4",
-  "description": "Work your SuppyHQ support inbox from Cursor. Read customer history, draft replies, and send only if you allow it.",
+  "description": "Work your SuppyHQ support inbox from your coding agent. Read customer history, draft replies, and send only if you allow it.",
   "author": {
     "name": "SuppyHQ",
     "email": "hello@suppyhq.com"
