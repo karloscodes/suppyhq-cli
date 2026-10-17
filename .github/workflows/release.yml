@@ -1,8 +1,10 @@
+# A tag v* makes a release: goreleaser builds the CLI for macOS and Linux and
+# attaches it with checksums.txt. This file is the same in suppyhq-cli and
+# lognorth-cli; each repo's .goreleaser file names its binary and archives.
 name: release
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -16,20 +18,13 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
-
-      # Tests + vet first. goreleaser also runs `go test ./...` via its
-      # before-hook, but pulling it up to its own step makes a failure
-      # show as "tests" in the Actions UI instead of buried under
-      # goreleaser's output. Same gate, clearer signal.
-      - name: vet
-        run: go vet ./...
-      - name: test
-        run: go test -race -v ./...
-
+          go-version-file: go.mod
+      # The same gate as CI, so a tag on a red commit releases nothing.
+      - run: go vet ./...
+      - run: go test -race ./...
       - uses: goreleaser/goreleaser-action@v7
         with:
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

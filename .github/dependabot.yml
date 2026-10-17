@@ -1,38 +1,48 @@
-# Major + security only, monthly. Borrowed from fusionaly-oss.
-#
-# We deliberately skip minor and patch bumps — they're 90% of dependabot
-# noise and rarely worth the merge churn on a small repo. Security
-# advisories still fire (those come from GitHub's vulnerability-alerts
-# setting, not this file) and major version bumps still arrive because
-# they need real review anyway.
+# Monthly, grouped version updates, each a week old at least.
+# Security updates come as soon as an advisory is out, in the "security" group.
+# Security and patch updates merge by themselves when CI passes; minor and major
+# updates wait for a person: .github/workflows/merge-security-updates.yml.
+# A merge releases nothing: updates ship with the next release a person cuts.
 version: 2
 updates:
-  # Go modules
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 2
+    # A new version waits a week: a compromised release is usually pulled by then.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
     groups:
-      go-all:
+      # Patch updates in their own group, so one minor bump does not hold them.
+      go-patch:
+        update-types: ["patch"]
         patterns: ["*"]
-    commit-message:
-      prefix: "deps(go)"
+      go:
+        patterns: ["*"]
+      # merge-security-updates.yml knows a security update by this group name.
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
-
-  # GitHub Actions
+      # First-party modules: bumped by hand when a new version is cut.
+      - dependency-name: "github.com/karloscodes/*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 1
+    # A new version waits a week: a compromised release is usually pulled by then.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
     groups:
-      actions-all:
+      # Patch updates in their own group, so one minor bump does not hold them.
+      actions-patch:
+        update-types: ["patch"]
         patterns: ["*"]
-    commit-message:
-      prefix: "ci"
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      actions:
+        patterns: ["*"]
+      # merge-security-updates.yml knows a security update by this group name.
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
