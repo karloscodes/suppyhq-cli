@@ -150,7 +150,7 @@ These are the rules every agent must follow. They're short. Memorize them.
 1. **One draft per conversation.** Calling `--draft` when a draft already exists **overwrites it**. The previous body is gone.
 2. **Check before overwriting.** Run `suppyhq thread <id>` first. If the response shows a draft, ask the operator: *"There's already a draft from you/another agent. Replace it?"* Don't blow away their work.
    A person's draft from the last 10 minutes is protected: the reply fails with `409` and `{"error": "draft_in_progress", "author": "<name>"}`. That person can be the operator. Don't retry. Tell the operator who is writing, and leave a note if you found something useful.
-   If the operator tells you to replace **their own** draft, pass `--replace` (suppyhq v0.4.4 or later; in MCP, `"replace": true`). It never writes over a teammate's draft: that still returns `409`.
+   If the operator tells you to replace **their own** draft, pass `--replace` (CLI v0.4.4 or later; in MCP, `"replace": true`). It never writes over a teammate's draft: that still returns `409`.
 3. **Don't send what you drafted.** Drafting and sending are separate operator actions. Save the draft, then stop. The operator presses Send.
 4. **No timing trick will turn a draft into a send.** There's no `suppyhq draft` followed by `suppyhq promote`. Just `--draft` (save) or no flag (send). Pick the right one up front.
 5. **Empty draft = no draft.** Don't autosave on every keystroke; the operator's composer already does that. You save when you have a complete reply.
