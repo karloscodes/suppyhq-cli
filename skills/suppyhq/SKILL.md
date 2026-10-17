@@ -68,12 +68,36 @@ Three domain tools: `suppyhq_conversations`, `suppyhq_customers`, `suppyhq_ident
 ### Read
 
 ```bash
-suppyhq inbox                  # list open conversations
+suppyhq inbox                  # the 100 newest conversations, Spam and Blocked left out
 suppyhq thread <id>            # one conversation + messages
 suppyhq customers              # list customers
 ```
 
 All return JSON. Pipe through `jq` for filtering, or feed straight into an LLM for summarization.
+
+### Where a conversation sits
+
+Each conversation has a `folder`, the same one the operator sees in the desk:
+
+| `folder` | In the desk | Meaning |
+|---|---|---|
+| `needs_you` | Needs you | The customer wrote last. This is the work. |
+| `waiting` | Waiting | You or a teammate answered. The ball is with the customer. |
+| `snoozed` | Snoozed | Parked until `snoozed_until`. |
+| `closed` | Closed | Done. |
+
+Triage from `folder`, not `status`. `status: "open"` only means not closed, so a thread that waits on the customer is also `open`.
+
+Spam and Blocked never reach you. If the operator asks about a thread you can't find, it is probably there: tell them to look in Junk in the desk.
+
+### Working with a team
+
+An inbox can have several people. Two fields tell you who:
+
+- **`owner`** on a conversation: the person who said "I'm on it". `null` means nobody yet.
+- **`author`** on a message: the person who wrote that reply or draft. `null` for the customer, for agents, and for automation.
+
+When `owner` is a person, a teammate is handling the thread. Leave a `suppyhq note` with what you found. Draft only if the operator asked you to, and never send there.
 
 ### Note: tell the team what you found
 
@@ -115,7 +139,7 @@ echo "<p>Your reply text.</p>" | suppyhq reply <conversation_id> --yes
 
 On an interactive terminal, `suppyhq reply <id>` (without `--draft`) prompts **Send this reply? [y/N]** before anything goes out. Agents and scripts must pass **`--yes`** only after the operator confirms — or use **`--draft`** (default).
 
-Goes out after a 30-second cancel window. Use send *only* when the operator's intent is unambiguous: they said "send", "handle", "answer for me", "ship it", or set up full-auto mode.
+Goes out after a 30-second cancel window. One exception: your first reply to someone the operator never wrote to is saved as a draft whatever you asked. The response says `"held": "first_reply_is_yours"`. Tell the operator it's in their composer; don't retry. Use send *only* when the operator's intent is unambiguous: they said "send", "handle", "answer for me", "ship it", or set up full-auto mode.
 
 **Sending needs its own permission.** Intent is not enough on its own: if this agent wasn't granted `send`, `reply --yes` fails with `403 Forbidden` and nothing reaches the customer. When that happens, don't retry and don't look for another way to send. Save the same body with `--draft` and tell the operator: *"I don't have permission to send, so I saved it as a draft in your composer. To let me send, re-run `suppyhq auth login --allow-send` and tick Send replies."*
 
@@ -125,6 +149,7 @@ These are the rules every agent must follow. They're short. Memorize them.
 
 1. **One draft per conversation.** Calling `--draft` when a draft already exists **overwrites it**. The previous body is gone.
 2. **Check before overwriting.** Run `suppyhq thread <id>` first. If the response shows a draft, ask the operator: *"There's already a draft from you/another agent. Replace it?"* Don't blow away their work.
+   A person's draft from the last 10 minutes is protected: the reply fails with `409` and `{"error": "teammate_writing", "author": "<name>"}`. Don't retry. Tell the operator who is writing, and leave a note if you found something useful.
 3. **Don't send what you drafted.** Drafting and sending are separate operator actions. Save the draft, then stop. The operator presses Send.
 4. **No timing trick will turn a draft into a send.** There's no `suppyhq draft` followed by `suppyhq promote`. Just `--draft` (save) or no flag (send). Pick the right one up front.
 5. **Empty draft = no draft.** Don't autosave on every keystroke; the operator's composer already does that. You save when you have a complete reply.
@@ -133,7 +158,7 @@ These are the rules every agent must follow. They're short. Memorize them.
 
 ```bash
 # triage
-suppyhq inbox | jq '.[] | select(.status=="open") | {id, subject, customer: .customer.email}'
+suppyhq inbox | jq '.[] | select(.folder=="needs_you") | {id, subject, owner: .owner.name, customer: .customer.email}'
 
 # read context, then draft
 suppyhq thread 42 | jq '.messages'

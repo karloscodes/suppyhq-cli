@@ -163,7 +163,7 @@ in `commandCatalog()`. Deliberate exceptions live in `.skill-drift-allowlist`.
 ## Examples
 
 ```bash
-suppyhq inbox --json | jq '.data[] | select(.status=="open")'
+suppyhq inbox --json | jq '.data[] | select(.folder=="needs_you")'
 suppyhq thread 42 --agent | jq '.messages[-1]'
 echo "<p>Yes — out by Friday.</p>" | suppyhq reply 42 --draft
 suppyhq doctor
