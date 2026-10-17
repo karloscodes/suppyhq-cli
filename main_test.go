@@ -931,6 +931,7 @@ func TestSplitReplyFlags(t *testing.T) {
 		{[]string{"42", "<body>", "-d"}, []string{"42", "<body>"}, true, false},
 		{[]string{"42", "--yes"}, []string{"42"}, false, true},
 		{[]string{"-y", "42", "<body>"}, []string{"42", "<body>"}, false, true},
+		{[]string{"42", "- Fixed in 1.2"}, []string{"42", "- Fixed in 1.2"}, false, false},
 	}
 	for _, c := range cases {
 		got, flags, err := splitReplyFlags(c.in)

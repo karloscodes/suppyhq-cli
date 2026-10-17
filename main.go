@@ -300,7 +300,8 @@ func splitReplyFlags(args []string) (rest []string, flags replyFlags, err error)
 		case "--replace":
 			flags.replace = true
 		default:
-			if strings.HasPrefix(a, "-") && len(a) > 1 {
+			// A flag is one dash-led word. "- Fixed in 1.2" is a body.
+			if strings.HasPrefix(a, "-") && len(a) > 1 && !strings.ContainsAny(a, " \t\n") {
 				return nil, flags, errUsage("reply: unknown flag " + a)
 			}
 			rest = append(rest, a)
