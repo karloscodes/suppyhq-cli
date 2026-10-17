@@ -94,7 +94,7 @@ Spam and Blocked never reach you. If the operator asks about a thread you can't 
 
 An inbox can have several people. Two fields tell you who:
 
-- **`owner`** on a conversation: the person who said "I'm on it". `null` means nobody yet.
+- **`owner`** on a conversation: the teammate who said "I'm on it". `null` means nobody yet, or the inbox has one person.
 - **`author`** on a message: the person who wrote that reply or draft. `null` for the customer, for agents, and for automation.
 
 When `owner` is a person, a teammate is handling the thread. Leave a `suppyhq note` with what you found. Draft only if the operator asked you to, and never send there.
@@ -149,7 +149,7 @@ These are the rules every agent must follow. They're short. Memorize them.
 
 1. **One draft per conversation.** Calling `--draft` when a draft already exists **overwrites it**. The previous body is gone.
 2. **Check before overwriting.** Run `suppyhq thread <id>` first. If the response shows a draft, ask the operator: *"There's already a draft from you/another agent. Replace it?"* Don't blow away their work.
-   A person's draft from the last 10 minutes is protected: the reply fails with `409` and `{"error": "teammate_writing", "author": "<name>"}`. Don't retry. Tell the operator who is writing, and leave a note if you found something useful.
+   A person's draft from the last 10 minutes is protected: the reply fails with `409` and `{"error": "draft_in_progress", "author": "<name>"}`. That person can be the operator. Don't retry. Tell the operator who is writing, and leave a note if you found something useful.
 3. **Don't send what you drafted.** Drafting and sending are separate operator actions. Save the draft, then stop. The operator presses Send.
 4. **No timing trick will turn a draft into a send.** There's no `suppyhq draft` followed by `suppyhq promote`. Just `--draft` (save) or no flag (send). Pick the right one up front.
 5. **Empty draft = no draft.** Don't autosave on every keystroke; the operator's composer already does that. You save when you have a complete reply.
