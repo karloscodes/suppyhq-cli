@@ -933,7 +933,11 @@ func TestSplitReplyFlags(t *testing.T) {
 		{[]string{"-y", "42", "<body>"}, []string{"42", "<body>"}, false, true},
 	}
 	for _, c := range cases {
-		got, draft, yes := splitReplyFlags(c.in)
+		got, flags, err := splitReplyFlags(c.in)
+		if err != nil {
+			t.Fatalf("%v: %v", c.in, err)
+		}
+		draft, yes := flags.draft, flags.yes
 		if draft != c.wantDraft {
 			t.Errorf("draft for %v: got %v, want %v", c.in, draft, c.wantDraft)
 		}
@@ -975,6 +979,64 @@ func TestRun_ReplyRequiresYesWhenNonInteractive(t *testing.T) {
 	combined := stdout.String() + stderr.String()
 	if !strings.Contains(combined, "--yes") {
 		t.Errorf("expected --yes hint: %s", combined)
+	}
+}
+
+func TestRun_ReplyRejectsAnUnknownFlagInsteadOfSendingIt(t *testing.T) {
+	posted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			w.Write([]byte(`{"access_token":"tok"}`))
+		default:
+			posted = true
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	saveConfig(&config{APIURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"reply", "42", "--yes", "--replce"}, strings.NewReader(""), &stdout, &stderr)
+
+	if code == 0 || posted {
+		t.Fatalf("an unknown flag must stop the reply: code=%d posted=%v", code, posted)
+	}
+}
+
+func TestRun_ReplyReplaceSetsParam(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			w.Write([]byte(`{"access_token":"tok"}`))
+		case "/api/v1/conversations/42/messages":
+			r.ParseForm()
+			if r.PostForm.Get("replace") != "true" || r.PostForm.Get("draft") != "true" {
+				t.Errorf("want replace=true and draft=true, got %v", r.PostForm)
+			}
+			if r.PostForm.Get("body_html") != "<p>new</p>" {
+				t.Errorf("--replace must not end up in the body: %v", r.PostForm)
+			}
+			w.Write([]byte(`{"id":99,"is_draft":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUPPYHQ_API_URL", "")
+	t.Setenv("SUPPYHQ_CLIENT_ID", "")
+	t.Setenv("SUPPYHQ_CLIENT_SECRET", "")
+	saveConfig(&config{APIURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"reply", "42", "--draft", "--replace"}, strings.NewReader("<p>new</p>"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("got %d (stderr=%s)", code, stderr.String())
 	}
 }
 

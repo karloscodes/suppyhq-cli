@@ -215,7 +215,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if len(rest) < 1 {
 			return emitError(stderr, stdout, outMode, errUsage("reply: usage — suppyhq reply <conversation_id> <html_body>  (or pipe body to stdin)"))
 		}
-		positional, draft, yes := splitReplyFlags(rest)
+		positional, flags, err := splitReplyFlags(rest)
+		if err != nil {
+			return emitError(stderr, stdout, outMode, err)
+		}
+		draft, yes := flags.draft, flags.yes
 		if len(positional) < 1 {
 			return emitError(stderr, stdout, outMode, errUsage("reply: missing conversation id"))
 		}
@@ -235,6 +239,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		form := url.Values{"body_html": {bodyHTML}}
 		if draft {
 			form.Set("draft", "true")
+		}
+		if flags.replace {
+			form.Set("replace", "true")
 		}
 		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+positional[0]+"/messages", form)
 		if err != nil {
@@ -275,21 +282,31 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 var errReplyCancelled = fmt.Errorf("reply cancelled")
 
-// splitReplyFlags pulls reply flags out of args, returning positional args
-// plus draft/yes booleans.
-func splitReplyFlags(args []string) (rest []string, draft, yes bool) {
+type replyFlags struct {
+	draft, yes, replace bool
+}
+
+// splitReplyFlags pulls reply flags out of args, returning positional args.
+// An unknown flag is an error: taken as the body, `--replce` would be
+// emailed to the customer.
+func splitReplyFlags(args []string) (rest []string, flags replyFlags, err error) {
 	rest = make([]string, 0, len(args))
 	for _, a := range args {
 		switch a {
 		case "--draft", "-d":
-			draft = true
+			flags.draft = true
 		case "--yes", "-y":
-			yes = true
+			flags.yes = true
+		case "--replace":
+			flags.replace = true
 		default:
+			if strings.HasPrefix(a, "-") && len(a) > 1 {
+				return nil, flags, errUsage("reply: unknown flag " + a)
+			}
 			rest = append(rest, a)
 		}
 	}
-	return rest, draft, yes
+	return rest, flags, nil
 }
 
 func isInteractiveStdin(stdin io.Reader) bool {
@@ -1379,6 +1396,7 @@ Write:
   reply <id> <html_body>        Post a reply (prompts on TTY; 30s cancel window)
   reply <id> --yes              Send without prompt (operator confirmed)
   reply <id> --draft            Save draft for operator review
+  reply <id> --draft --replace  Replace the operator's own fresh draft, when told to
 
 Discovery:
   commands --json               Full command catalog

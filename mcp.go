@@ -38,6 +38,7 @@ func allMCPDomains() []mcpDomain {
 				"reply": {name: "reply", readOnly: false, schema: map[string]any{"type": "object", "properties": map[string]any{
 					"id": map[string]any{"type": "string"}, "body_html": map[string]any{"type": "string"},
 					"draft": map[string]any{"type": "boolean"}, "confirm": map[string]any{"type": "boolean", "description": "Required true to send (not draft)"},
+					"replace": map[string]any{"type": "boolean", "description": "Write over the operator's own draft from the last 10 minutes. Only when the operator said to replace that draft"},
 				}, "required": []string{"id", "body_html"}}},
 				"note": {name: "note", readOnly: false, schema: map[string]any{"type": "object", "properties": map[string]any{
 					"id": map[string]any{"type": "string", "description": "Conversation id"}, "body": map[string]any{"type": "string", "description": "Internal note. The customer never sees it."},
@@ -248,6 +249,9 @@ func executeMCPAction(cfg *config, d mcpDomain, action mcpAction, params map[str
 		form := url.Values{"body_html": {html}}
 		if draft {
 			form.Set("draft", "true")
+		}
+		if paramBool(params, "replace") {
+			form.Set("replace", "true")
 		}
 		body, err := apiPOST(cfg, token, "/api/v1/conversations/"+id+"/messages", form)
 		if err != nil {

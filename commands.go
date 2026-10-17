@@ -51,6 +51,7 @@ func commandCatalog() []commandSpec {
 			Flags: []flagSpec{
 				{Name: "draft", Shorthand: "d", Type: "bool", Usage: "Save as draft for operator review"},
 				{Name: "yes", Shorthand: "y", Type: "bool", Usage: "Send without prompting. Only after the operator has confirmed"},
+				{Name: "replace", Type: "bool", Usage: "Write over the operator's own fresh draft. Only when the operator said to replace it"},
 			},
 			Notes: []string{"Body via 2nd arg, stdin, or echo pipe", "Default send queues 30s cancel window", "Writes are never auto-retried on 429"},
 		},

@@ -97,7 +97,7 @@ An inbox can have several people. Two fields tell you who:
 - **`owner`** on a conversation: the teammate who said "I'm on it". `null` means nobody yet, or the inbox has one person.
 - **`author`** on a message: the person who wrote that reply or draft. `null` for the customer, for agents, and for automation.
 
-When `owner` is a person, a teammate is handling the thread. Leave a `suppyhq note` with what you found. Draft only if the operator asked you to, and never send there.
+When `owner` is a person, a teammate is handling the thread. Leave a `suppyhq note` with what you found, and draft only if the operator asked you to. A send there is saved as a draft with `"held": "teammate_on_it"`: tell the operator the teammate has it.
 
 ### Note: tell the team what you found
 
