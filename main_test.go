@@ -1113,11 +1113,13 @@ func TestRun_NotePostsToNotes(t *testing.T) {
 	}
 }
 
-func writeTarGz(t *testing.T, entries []struct {
+type tarEntry struct {
 	name string
 	body string
 	typ  byte
-}) string {
+}
+
+func writeTarGz(t *testing.T, entries []tarEntry) string {
 	t.Helper()
 	archive := filepath.Join(t.TempDir(), "a.tar.gz")
 	f, err := os.Create(archive)
@@ -1150,42 +1152,36 @@ func writeTarGz(t *testing.T, entries []struct {
 	return archive
 }
 
-func TestExtractTarGzBinary_ExactRootPath(t *testing.T) {
-	archive := writeTarGz(t, []struct {
-		name string
-		body string
-		typ  byte
-	}{
-		{name: "skills/suppyhq/", typ: tar.TypeDir},
-		{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
-		{name: "suppyhq", body: "the-cli", typ: tar.TypeReg},
+func TestExtractTarGzBinary(t *testing.T) {
+	t.Run("exact root path", func(t *testing.T) {
+		archive := writeTarGz(t, []tarEntry{
+			{name: "skills/suppyhq/", typ: tar.TypeDir},
+			{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
+			{name: "suppyhq", body: "the-cli", typ: tar.TypeReg},
+		})
+		dest := filepath.Join(t.TempDir(), "out")
+		if err := extractTarGzBinary(archive, "suppyhq", dest); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "the-cli" {
+			t.Fatalf("got %q", got)
+		}
 	})
-	dest := filepath.Join(t.TempDir(), "out")
-	if err := extractTarGzBinary(archive, "suppyhq", dest); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "the-cli" {
-		t.Fatalf("got %q", got)
-	}
-}
 
-func TestExtractTarGzBinary_RejectsNestedName(t *testing.T) {
-	archive := writeTarGz(t, []struct {
-		name string
-		body string
-		typ  byte
-	}{
-		{name: "skills/suppyhq/", typ: tar.TypeDir},
-		{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
+	t.Run("rejects nested name", func(t *testing.T) {
+		archive := writeTarGz(t, []tarEntry{
+			{name: "skills/suppyhq/", typ: tar.TypeDir},
+			{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
+		})
+		err := extractTarGzBinary(archive, "suppyhq", filepath.Join(t.TempDir(), "out"))
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("want missing root binary, got %v", err)
+		}
 	})
-	err := extractTarGzBinary(archive, "suppyhq", filepath.Join(t.TempDir(), "out"))
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("want missing root binary, got %v", err)
-	}
 }
 
 func TestVerifyChecksum_Match(t *testing.T) {

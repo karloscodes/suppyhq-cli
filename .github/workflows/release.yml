@@ -1,6 +1,6 @@
 # A tag v* makes a release: the CLI for macOS and Linux, and checksums.txt.
-# This file is the same in chasen and lognorth-cli; only the binary and
-# archive names differ.
+# This file is the same in chasen and lognorth-cli; the binary name, archive
+# name, and archive files differ.
 name: release
 on:
   push:
@@ -29,8 +29,14 @@ jobs:
             refs/tags/v*) ;;
             *) echo "GITHUB_REF is $GITHUB_REF, not refs/tags/v*"; exit 1 ;;
           esac
-          test "$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)" || {
+            echo "refs/tags/$GITHUB_REF_NAME is not the checkout $(git rev-parse HEAD)"
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "checkout $(git rev-parse HEAD) is not GITHUB_SHA $GITHUB_SHA"
+            exit 1
+          }
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
