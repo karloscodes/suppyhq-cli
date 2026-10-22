@@ -27,7 +27,7 @@ jobs:
         run: |
           case "$GITHUB_REF" in
             refs/tags/v*) ;;
-            *) echo "not a v* tag: $GITHUB_REF"; exit 1 ;;
+            *) echo "GITHUB_REF is $GITHUB_REF, not refs/tags/v*"; exit 1 ;;
           esac
           test "$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -61,6 +61,7 @@ jobs:
             arch="${target#*/}"
             GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$flags" -o "$bins/suppyhq-${os}-${arch}" .
           done
+          mod="$(go list -m)"
           (
             cd "$bins"
             want="go$(awk '/^go / { print $2; exit }' "$GITHUB_WORKSPACE/go.mod")"
@@ -76,7 +77,7 @@ jobs:
                 *) echo "$bin was built from a modified checkout"; printf '%s\n' "$info"; exit 1 ;;
               esac
               case "$info" in
-                *"${tab}mod${tab}github.com/karloscodes/suppyhq-cli${tab}${GITHUB_REF_NAME}${tab}"*) ;;
+                *"${tab}mod${tab}${mod}${tab}${GITHUB_REF_NAME}${tab}"*) ;;
                 *) echo "$bin is not the module version $GITHUB_REF_NAME"; printf '%s\n' "$info"; exit 1 ;;
               esac
             done
