@@ -1,30 +1,97 @@
-# A tag v* makes a release: goreleaser builds the CLI for macOS and Linux and
-# attaches it with checksums.txt. This file is the same in suppyhq-cli and
-# lognorth-cli; each repo's .goreleaser file names its binary and archives.
+# A tag v* makes a release: the CLI for macOS and Linux, and checksums.txt.
+# install.sh and `suppyhq upgrade` download suppyhq_<version>_<os>_<arch>.tar.gz,
+# where <version> is the tag without a leading v. Those names stay.
 name: release
 on:
   push:
     tags: ["v*"]
 
+# Read only by default: only the job that publishes can write the release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
+          # The whole history, so the build stamps the tag and not a
+          # pseudo-version from a shallow clone.
           fetch-depth: 0
+          persist-credentials: false
+      - name: The checkout is the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # The same gate as CI, so a tag on a red commit releases nothing.
       - run: go vet ./...
       - run: go test -race ./...
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: "~> v2"
-          args: release --clean
+      - name: Build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          # Same Version string and archive names as the goreleaser releases:
+          # the tag with one leading v removed.
+          ver="${GITHUB_REF_NAME#v}"
+          flags="-s -w -X main.Version=${ver}"
+          # Outside the checkout. Writing a binary into the tree stamps every
+          # later build vcs.modified, with a module version of <tag>+dirty.
+          bins="${RUNNER_TEMP}/bins"
+          out="${RUNNER_TEMP}/dist"
+          mkdir -p "$bins" "$out"
+          test -z "$(git status --porcelain)"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$flags" -o "$bins/suppyhq-${os}-${arch}" .
+          done
+          (
+            cd "$bins"
+            want="go$(awk '/^go / { print $2; exit }' "$GITHUB_WORKSPACE/go.mod")"
+            tab="$(printf '\t')"
+            for bin in suppyhq-*; do
+              info="$(go version -m "$bin")"
+              case "$info" in
+                "$bin: $want"$'\n'*) ;;
+                *) echo "$bin was built with another Go than $want"; printf '%s\n' "$info"; exit 1 ;;
+              esac
+              case "$info" in
+                *"${tab}build${tab}vcs.modified=false"*) ;;
+                *) echo "$bin was built from a modified checkout"; printf '%s\n' "$info"; exit 1 ;;
+              esac
+              if [ "$GITHUB_REF" != "${GITHUB_REF#refs/tags/}" ]; then
+                case "$info" in
+                  *"${tab}mod${tab}github.com/karloscodes/suppyhq-cli${tab}${GITHUB_REF_NAME}${tab}"*) ;;
+                  *) echo "$bin is not the module version $GITHUB_REF_NAME"; printf '%s\n' "$info"; exit 1 ;;
+                esac
+              fi
+            done
+          )
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            stage="$(mktemp -d)"
+            cp -a LICENSE README.md plugin.json mcp.json gemini-extension.json \
+              skills .claude-plugin .cursor-plugin .codex-plugin "$stage/"
+            install -m 0755 "$bins/suppyhq-${os}-${arch}" "$stage/suppyhq"
+            tar -C "$stage" -czf "$out/suppyhq_${ver}_${os}_${arch}.tar.gz" \
+              .claude-plugin .codex-plugin .cursor-plugin \
+              LICENSE README.md gemini-extension.json mcp.json plugin.json \
+              skills suppyhq
+            rm -rf "$stage"
+          done
+          (
+            cd "$out"
+            sha256sum suppyhq_*.tar.gz > checksums.txt
+          )
+          test -z "$(git status --porcelain)"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* --title "$GITHUB_REF_NAME" --generate-notes

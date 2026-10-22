@@ -48,7 +48,7 @@ import (
 //go:embed skills/suppyhq/SKILL.md
 var skillMarkdown string
 
-// Version is set by goreleaser at build time via -ldflags.
+// Version is set at release time via -ldflags (-X main.Version=<tag without v>).
 var Version = "dev"
 
 const (
