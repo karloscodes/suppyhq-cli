@@ -1,6 +1,6 @@
 # A tag v* makes a release: the CLI for macOS and Linux, and checksums.txt.
-# install.sh and `suppyhq upgrade` download suppyhq_<version>_<os>_<arch>.tar.gz,
-# where <version> is the tag without a leading v. Those names stay.
+# This file is the same in chasen and lognorth-cli; only the binary and
+# archive names differ.
 name: release
 on:
   push:
@@ -18,16 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The whole history, so the build stamps the tag and not a
-          # pseudo-version from a shallow clone.
+          # The whole history and every tag, so the build stamps this tag
+          # (not a pseudo-version) and the notes start at the previous tag.
           fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
       - name: The checkout is the tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "not a v* tag: $GITHUB_REF"; exit 1 ;;
+          esac
+          test "$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       # The same gate as CI, so a tag on a red commit releases nothing.
       - run: go vet ./...
       - run: go test -race ./...
@@ -36,8 +43,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          # Same Version string and archive names as the goreleaser releases:
-          # the tag with one leading v removed.
+          # Version string and archive names drop one leading v from the tag.
           ver="${GITHUB_REF_NAME#v}"
           flags="-s -w -X main.Version=${ver}"
           # Outside the checkout. Writing a binary into the tree stamps every
@@ -45,7 +51,11 @@ jobs:
           bins="${RUNNER_TEMP}/bins"
           out="${RUNNER_TEMP}/dist"
           mkdir -p "$bins" "$out"
-          test -z "$(git status --porcelain)"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "refusing to build: the worktree is dirty"
+            git status --porcelain
+            exit 1
+          fi
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
@@ -65,12 +75,10 @@ jobs:
                 *"${tab}build${tab}vcs.modified=false"*) ;;
                 *) echo "$bin was built from a modified checkout"; printf '%s\n' "$info"; exit 1 ;;
               esac
-              if [ "$GITHUB_REF" != "${GITHUB_REF#refs/tags/}" ]; then
-                case "$info" in
-                  *"${tab}mod${tab}github.com/karloscodes/suppyhq-cli${tab}${GITHUB_REF_NAME}${tab}"*) ;;
-                  *) echo "$bin is not the module version $GITHUB_REF_NAME"; printf '%s\n' "$info"; exit 1 ;;
-                esac
-              fi
+              case "$info" in
+                *"${tab}mod${tab}github.com/karloscodes/suppyhq-cli${tab}${GITHUB_REF_NAME}${tab}"*) ;;
+                *) echo "$bin is not the module version $GITHUB_REF_NAME"; printf '%s\n' "$info"; exit 1 ;;
+              esac
             done
           )
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
@@ -80,18 +88,46 @@ jobs:
             cp -a LICENSE README.md plugin.json mcp.json gemini-extension.json \
               skills .claude-plugin .cursor-plugin .codex-plugin "$stage/"
             install -m 0755 "$bins/suppyhq-${os}-${arch}" "$stage/suppyhq"
-            tar -C "$stage" -czf "$out/suppyhq_${ver}_${os}_${arch}.tar.gz" \
-              .claude-plugin .codex-plugin .cursor-plugin \
-              LICENSE README.md gemini-extension.json mcp.json plugin.json \
-              skills suppyhq
-            rm -rf "$stage"
+            list="$(mktemp)"
+            (cd "$stage" && find . -type f -printf '%P\n' | LC_ALL=C sort > "$list")
+            tar -C "$stage" -czf "$out/suppyhq_${ver}_${os}_${arch}.tar.gz" -T "$list"
+            rm -rf "$stage" "$list"
           done
           (
             cd "$out"
             sha256sum suppyhq_*.tar.gz > checksums.txt
           )
-          test -z "$(git status --porcelain)"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "refusing to publish: the worktree became dirty during the build"
+            git status --porcelain
+            exit 1
+          fi
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          set -euo pipefail
+          # Commits since the previous tag, sorted by message, without
+          # docs:/test:/chore: or merge commits. Same shape as earlier releases.
+          notes="${RUNNER_TEMP}/notes.md"
+          {
+            echo "## Changelog"
+            prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+            if [ -n "$prev" ]; then
+              range="${prev}..${GITHUB_REF_NAME}"
+            else
+              range="${GITHUB_REF_NAME}"
+            fi
+            git log --format='%H%x09%s' "$range" \
+              | awk -F '\t' '
+                  $2 ~ /^docs:/ || $2 ~ /^test:/ || $2 ~ /^chore:/ { next }
+                  $2 ~ /Merge pull request/ || $2 ~ /Merge branch/ { next }
+                  { printf "%s\t%s\n", $2, $1 }
+                ' \
+              | LC_ALL=C sort \
+              | awk -F '\t' '{ printf "* %s %s\n", $2, $1 }'
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$notes" \
+            --verify-tag

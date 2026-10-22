@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
@@ -1108,6 +1110,81 @@ func TestRun_NotePostsToNotes(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"id"`) {
 		t.Errorf("missing note id: %s", stdout.String())
+	}
+}
+
+func writeTarGz(t *testing.T, entries []struct {
+	name string
+	body string
+	typ  byte
+}) string {
+	t.Helper()
+	archive := filepath.Join(t.TempDir(), "a.tar.gz")
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: e.typ}
+		if e.typ == tar.TypeReg {
+			hdr.Size = int64(len(e.body))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if e.typ == tar.TypeReg {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
+func TestExtractTarGzBinary_ExactRootPath(t *testing.T) {
+	archive := writeTarGz(t, []struct {
+		name string
+		body string
+		typ  byte
+	}{
+		{name: "skills/suppyhq/", typ: tar.TypeDir},
+		{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
+		{name: "suppyhq", body: "the-cli", typ: tar.TypeReg},
+	})
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := extractTarGzBinary(archive, "suppyhq", dest); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "the-cli" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExtractTarGzBinary_RejectsNestedName(t *testing.T) {
+	archive := writeTarGz(t, []struct {
+		name string
+		body string
+		typ  byte
+	}{
+		{name: "skills/suppyhq/", typ: tar.TypeDir},
+		{name: "skills/suppyhq", body: "not-the-cli", typ: tar.TypeReg},
+	})
+	err := extractTarGzBinary(archive, "suppyhq", filepath.Join(t.TempDir(), "out"))
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("want missing root binary, got %v", err)
 	}
 }
 
