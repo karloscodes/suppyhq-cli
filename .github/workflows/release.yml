@@ -1,30 +1,140 @@
-# A tag v* makes a release: goreleaser builds the CLI for macOS and Linux and
-# attaches it with checksums.txt. This file is the same in suppyhq-cli and
-# lognorth-cli; each repo's .goreleaser file names its binary and archives.
+# A tag v* makes a release: the CLI for macOS and Linux, and checksums.txt.
+# This file is the same in chasen and lognorth-cli; the binary name, archive
+# name, and archive files differ.
 name: release
 on:
   push:
     tags: ["v*"]
 
+# Read only by default: only the job that publishes can write the release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
+          # The whole history and every tag, so the build stamps this tag
+          # (not a pseudo-version) and the notes start at the previous tag.
           fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: The checkout is the tag
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "GITHUB_REF is $GITHUB_REF, not refs/tags/v*"; exit 1 ;;
+          esac
+          test "$(git rev-list -n 1 "refs/tags/$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)" || {
+            echo "refs/tags/$GITHUB_REF_NAME is not the checkout $(git rev-parse HEAD)"
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "checkout $(git rev-parse HEAD) is not GITHUB_SHA $GITHUB_SHA"
+            exit 1
+          }
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       # The same gate as CI, so a tag on a red commit releases nothing.
       - run: go vet ./...
       - run: go test -race ./...
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: "~> v2"
-          args: release --clean
+      - name: Build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          # Version string and archive names drop one leading v from the tag.
+          ver="${GITHUB_REF_NAME#v}"
+          flags="-s -w -X main.Version=${ver}"
+          # Outside the checkout. Writing a binary into the tree stamps every
+          # later build vcs.modified, with a module version of <tag>+dirty.
+          bins="${RUNNER_TEMP}/bins"
+          out="${RUNNER_TEMP}/dist"
+          mkdir -p "$bins" "$out"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "refusing to build: the worktree is dirty"
+            git status --porcelain
+            exit 1
+          fi
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$flags" -o "$bins/suppyhq-${os}-${arch}" .
+          done
+          mod="$(go list -m)"
+          (
+            cd "$bins"
+            want="go$(awk '/^go / { print $2; exit }' "$GITHUB_WORKSPACE/go.mod")"
+            tab="$(printf '\t')"
+            for bin in suppyhq-*; do
+              info="$(go version -m "$bin")"
+              case "$info" in
+                "$bin: $want"$'\n'*) ;;
+                *) echo "$bin was built with another Go than $want"; printf '%s\n' "$info"; exit 1 ;;
+              esac
+              case "$info" in
+                *"${tab}build${tab}vcs.modified=false"*) ;;
+                *) echo "$bin was built from a modified checkout"; printf '%s\n' "$info"; exit 1 ;;
+              esac
+              case "$info" in
+                *"${tab}mod${tab}${mod}${tab}${GITHUB_REF_NAME}${tab}"*) ;;
+                *) echo "$bin is not the module version $GITHUB_REF_NAME"; printf '%s\n' "$info"; exit 1 ;;
+              esac
+            done
+          )
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            stage="$(mktemp -d)"
+            cp -a LICENSE README.md plugin.json mcp.json gemini-extension.json \
+              skills .claude-plugin .cursor-plugin .codex-plugin "$stage/"
+            install -m 0755 "$bins/suppyhq-${os}-${arch}" "$stage/suppyhq"
+            list="$(mktemp)"
+            (cd "$stage" && find . -type f -printf '%P\n' | LC_ALL=C sort > "$list")
+            tar -C "$stage" -czf "$out/suppyhq_${ver}_${os}_${arch}.tar.gz" -T "$list"
+            rm -rf "$stage" "$list"
+          done
+          (
+            cd "$out"
+            sha256sum suppyhq_*.tar.gz > checksums.txt
+          )
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "refusing to publish: the worktree became dirty during the build"
+            git status --porcelain
+            exit 1
+          fi
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Commits since the previous tag, sorted by message, without
+          # docs:/test:/chore: or merge commits. Same shape as earlier releases.
+          notes="${RUNNER_TEMP}/notes.md"
+          {
+            echo "## Changelog"
+            prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+            if [ -n "$prev" ]; then
+              range="${prev}..${GITHUB_REF_NAME}"
+            else
+              range="${GITHUB_REF_NAME}"
+            fi
+            git log --format='%H%x09%s' "$range" \
+              | awk -F '\t' '
+                  $2 ~ /^docs:/ || $2 ~ /^test:/ || $2 ~ /^chore:/ { next }
+                  $2 ~ /Merge pull request/ || $2 ~ /Merge branch/ { next }
+                  { printf "%s\t%s\n", $2, $1 }
+                ' \
+              | LC_ALL=C sort \
+              | awk -F '\t' '{ printf "* %s %s\n", $2, $1 }'
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$notes" \
+            --verify-tag

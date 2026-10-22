@@ -193,7 +193,8 @@ main() {
 
   step "Extracting"
   tar -C "$tmp" -xzf "$tmp/$archive" || error "extract failed"
-  [[ -x "$tmp/$BIN" ]] || error "binary missing in archive"
+  # The CLI is the regular file at the archive root, not skills/suppyhq/.
+  [[ -f "$tmp/$BIN" && -x "$tmp/$BIN" ]] || error "binary missing in archive"
 
   install -m 0755 "$tmp/$BIN" "$BIN_DIR/$BIN" || error "install to $BIN_DIR/$BIN failed"
   info "Installed $BIN v${version} → $BIN_DIR/$BIN"

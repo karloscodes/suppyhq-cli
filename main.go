@@ -38,6 +38,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -48,7 +49,7 @@ import (
 //go:embed skills/suppyhq/SKILL.md
 var skillMarkdown string
 
-// Version is set by goreleaser at build time via -ldflags.
+// Version is set at release time via -ldflags (-X main.Version=<tag without v>).
 var Version = "dev"
 
 const (
@@ -1301,7 +1302,9 @@ func extractTarGzBinary(archivePath, wantName, destPath string) error {
 		if err != nil {
 			return err
 		}
-		if filepath.Base(hdr.Name) != wantName || hdr.Typeflag != tar.TypeReg {
+		// Exact path. filepath.Base would also accept skills/suppyhq, which is
+		// the skill directory, not the CLI at the archive root.
+		if path.Clean(hdr.Name) != wantName || hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
