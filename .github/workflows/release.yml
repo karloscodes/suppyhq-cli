@@ -1,7 +1,7 @@
 # A tag v* makes a release: the CLI for macOS and Linux, and checksums.txt.
-# This file is the same in chasen and lognorth-cli; the binary name, archive
-# name, and archive files differ.
-name: release
+# The test job is the same in chasen, lognorth-cli, and suppyhq-cli. Each
+# builds and publishes its own binaries.
+name: Release
 on:
   push:
     tags: ["v*"]
@@ -13,7 +13,26 @@ permissions:
   contents: read
 
 jobs:
+  # The same gate as CI, so a tag on a red commit releases nothing. A release
+  # is made only from a commit of main.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -43,9 +62,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      # The same gate as CI, so a tag on a red commit releases nothing.
-      - run: go vet ./...
-      - run: go test -race ./...
       - name: Build
         env:
           CGO_ENABLED: "0"
