@@ -5,6 +5,8 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Security release starts it for a tag it pushed: see security-release.yml.
+  workflow_dispatch:
 
 # Read only by default: only the job that publishes can write the release.
 permissions:
@@ -134,7 +136,12 @@ jobs:
               | LC_ALL=C sort \
               | awk -F '\t' '{ printf "* %s %s\n", $2, $1 }'
           } > "$notes"
+          # A tag with a hyphen (v1.5.0-rc.1) is a pre-release, which
+          # releases/latest skips: no install or update takes it.
+          prerelease=false
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=true; fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
             --title "$GITHUB_REF_NAME" \
             --notes-file "$notes" \
-            --verify-tag
+            --verify-tag \
+            --prerelease="$prerelease"
